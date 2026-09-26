@@ -1,102 +1,134 @@
 # VAANKAN Progress Report
 
-**Status date:** 23 September 2026
+**Status date:** 24 September 2026
 
-## Running Application
+## Current Services
 
-Both interfaces are served by the same Vite development server:
+### Frontend
 
-- **Port:** `5173`
-- **Admin login:** http://localhost:5173/admin
-- **Citizen login:** http://localhost:5173/citizen
+- Vite development server: `http://localhost:5173`
+- Admin portal: `http://localhost:5173/admin`
+- Citizen portal: `http://localhost:5173/citizen`
 
-There are currently no separate backend ports. The frontend is using mock data and browser APIs.
+### Backend Demo Slice
 
-## Completed
+- FastAPI server: `http://127.0.0.1:8000`
+- Health endpoint: `GET /health`
+- OpenAPI documentation: `http://127.0.0.1:8000/docs`
+- Storage mode: deterministic in-memory demo store
+- The backend is a real API seam, but it is not yet connected to PostgreSQL, PostGIS, Kafka, MinIO, or trained ML models.
+- Provider dispatch endpoint: `POST /api/notifications/dispatch` with optional SMTP email and Twilio SMS integration.
 
-### Admin Workspace
+### Engine Dashboards
 
-- Admin login screen at `/admin`
-- Intelligence dashboard
-- Admin review queue
-- Date/time, event, region, and verification filters
-- Functional mock event filtering
-- Admin review search
-- India map using Leaflet and OpenStreetMap
-- Event intensity overlays and map popups
-- Night mode
-- Sign-out flow
-- Dashboard KPIs and report activity panels
+- VISTA Streamlit model lab: `streamlit_vista.py`, intended for port `8501`.
+- VAYU Streamlit analytics lab: `streamlit_vayu.py`, intended for port `8502`.
+- Both dashboards show model cards, demo metrics, dataset summaries, charts, event categories, and pipeline-readiness notes.
+- All displayed metrics are explicitly marked synthetic/demo until actual datasets and training/evaluation pipelines are connected.
+- Both dashboards were launched and returned HTTP 200 during smoke testing.
 
-### Citizen Workspace
+## Implemented Frontend
 
-- Separate citizen login screen at `/citizen`
-- Citizen registration flow
-- Registration fields for name, phone, email, and government ID
-- GPS permission request during sign-in
-- GPS autofill for latitude and longitude
-- Editable latitude and longitude fields
-- Browser permission behavior supports previously allowed GPS access
-- Citizen Home page
-- Separate Alerts page
-- Citizen-specific forest, mint, and saffron theme
-- Citizen sign-out flow
-- Citizen night mode
-- India map with filtered event intensity overlays
-- Citizen location marker on the map
-- Shared date, event, region, and status filters
-- Area analysis based on filtered mock weather events
-- Nearby alerts limited to verified events within a 10 km radius
-- Local citizen profile database using browser `localStorage`
-- Citizen login validates saved email and password records
-- Registration requires personal details plus GPS coordinates or a typed address
-- GPS coordinates are autofilled when available and remain editable
-- Citizen Profile page supports editing and saving name, phone, email, government ID, address, and coordinates
+### Admin Portal
 
-### Mock Data
+- Demo admin login.
+- Intelligence dashboard with KPI cards, date/event/region/status filters, report velocity, source health, and processing health.
+- Leaflet/OpenStreetMap map with event intensity circles, markers, and popups.
+- Admin review queue with search, evidence signal, source, confidence, and received time.
+- Alert detail page opened from dashboard events, attention notifications, and review records.
+- Alert detail includes event metadata, coordinates, date/time, model-predicted status, map context, sample evidence records, and verification controls.
+- Verification actions: `Verified`, `Review`, and `Suspicious`.
+- Responsive navigation, night mode, sign-out, and feedback notifications.
 
-- Multiple Indian regions and cities
-- Flooding
-- Rainfall
-- Thunderstorms
-- Heatwaves
-- Fog
-- Dust storms
-- Strong winds
-- Verified, review, and suspicious statuses
-- Coordinates, confidence, intensity, report counts, sources, and event age
+### Citizen Portal
 
-## Validation Completed
+- Citizen registration and login at `/citizen`.
+- Registration collects personal/contact data and address; it does not request GPS.
+- Continuous `watchPosition` GPS tracking starts after authentication and is cleared when the session ends.
+- Current-location map, analysis, recent signals, and 10 km verified-alert radius.
+- Google Maps-style current-location pin.
+- Separate location search page that does not replace the live GPS view.
+- Alert centre with portal, SMS, and email delivery states.
+- Profile editing, browser `localStorage`, night mode, responsive layout, and sign-out.
 
-- `npm run build` passed
-- `npm run lint` passed
-- Admin route browser checked
-- Citizen route browser checked
-- Citizen registration fields browser checked
-- Citizen Home and Alerts navigation browser checked
-- Shared filters browser checked
-- Sign-out browser checked
-- Leaflet map rendering browser checked
+## Implemented Backend Demo Slice
 
-## Current Limitations
+### Common Data Contract
 
-- Authentication is demo-only; any non-empty password is accepted.
-- Citizen profiles are persisted locally in the browser only; they are not yet stored in a shared backend database.
-- Mock data is stored in the frontend.
-- GPS requires browser permission and a supported secure context such as `localhost`.
-- OpenStreetMap tiles require internet access.
-- Nearby alerts are calculated from mock event coordinates.
-- No backend API, database, WebSocket, Kafka, or ML model is connected yet.
+`backend/schemas.py` validates normalized records with:
 
-## Next Recommended Work
+- record ID, source type/name, timestamp, text, language;
+- latitude/longitude, city, district, and state;
+- all seven required event categories;
+- optional image/video URLs;
+- `PENDING`, `VERIFIED`, `SUSPICIOUS`, and `UNSUPPORTED` statuses.
 
-1. Create a FastAPI backend with separate admin and citizen authentication.
-2. Move citizen profiles from browser `localStorage` to PostgreSQL with password hashing and email uniqueness checks.
-3. Replace frontend mock data with API responses.
-4. Add PostgreSQL/PostGIS for spatial and 10 km alert queries.
-5. Add secure media upload for citizen photos and videos.
-6. Add admin evidence detail, approve/reject, merge, and duplicate workflows.
-7. Add WebSocket updates for live events and alerts.
-8. Add real weather API and authorized source adapters.
-9. Add notification delivery for web push or Firebase Cloud Messaging.
-10. Add privacy, consent, rate limiting, and role-based access controls.
+### FastAPI Endpoints
+
+- `GET /health`
+- `POST /api/auth/citizen/register`
+- `POST /api/auth/citizen/login`
+- `POST /api/reports`
+- `GET /api/reports`
+- `GET /api/reports/{report_id}`
+- `POST /api/vista/verify`
+- `GET /api/vayu/analytics`
+- `POST /api/admin/reports/{report_id}/decision`
+- `POST /api/admin/reports/{report_id}/verify`
+- `POST /api/admin/reports/{report_id}/review`
+- `POST /api/admin/reports/{report_id}/suspicious`
+- `GET /api/admin/audit-logs`
+
+Admin decisions update the demo store and create an audit action containing the report ID, previous status, new status, reason, and timestamp. Passwords are hashed in the demo store; this is not a production identity system.
+
+## Testing Completed
+
+### Automated
+
+- Backend API tests: **5 passed** with pytest.
+- VISTA Streamlit dashboard: **HTTP 200** on port `8501`.
+- VAYU Streamlit dashboard: **HTTP 200** on port `8502`.
+- Tests cover health, normalized report lifecycle, validation, registration/login, admin decision aliases, audit records, VISTA contract, and VAYU contract.
+- React TypeScript/Vite production build: **passed**.
+- ESLint: **passed**.
+- Python backend compilation: **passed**.
+- Documentation whitespace check: **passed** with `git diff --check`.
+
+### Live Smoke Tests
+
+- Vite root responded with HTTP 200.
+- FastAPI `/health` responded with HTTP 200.
+- FastAPI `/api/reports` responded with HTTP 200 and returned the normalized sample report.
+- Temporary FastAPI smoke-test process was stopped after validation.
+
+## Explicitly Not Implemented Yet
+
+The full supplied architecture prompt is larger than the existing frontend and the current increment. These remain planned, not claimed as complete:
+
+- PostgreSQL and PostGIS persistence.
+- MinIO/S3 image and video storage.
+- Kafka topics and consumers.
+- PySpark jobs for large-scale processing.
+- Real weather, social, website, and public-dataset adapters.
+- 20,000-row VISTA and 100,000-row VAYU datasets.
+- XLM-R/IndicBERT, Sentence-BERT, CLIP/ViT, FAISS, DBSCAN, XGBoost, Isolation Forest, LSTM, SHAP, and trained model artifacts.
+- Real VISTA evidence fusion and evaluation metrics.
+- Real VAYU anomaly, hotspot, trend, and severity models.
+- WebSockets and live dashboard updates.
+- Real media upload validation and retention.
+- Real SMS, email, FCM, or Web Push delivery.
+- SMTP/Twilio delivery is now implemented as an optional provider adapter, but no provider credentials are stored in the repository.
+- Streamlit VISTA and VAYU engineering dashboards.
+- Persistent JWT/Argon2 authentication, RBAC, consent, rate limiting, and production audit logging.
+- Full React-to-FastAPI integration; the current UI still uses its existing mock frontend data.
+
+## Next Implementation Order
+
+1. Add SQLAlchemy migrations and PostgreSQL/PostGIS repositories while preserving the in-memory test store.
+2. Connect React admin/citizen data loading to FastAPI with loading, stale, offline, and API-error states.
+3. Add authenticated citizen report submission with image/video metadata and object-storage adapters.
+4. Add replaceable weather, public-dataset, website, social, and citizen ingestion interfaces.
+5. Add deterministic deduplication/event fingerprinting before introducing trained VISTA/VAYU models.
+6. Add Kafka/WebSocket integration and source/processing health telemetry.
+7. Generate validated synthetic VISTA/VAYU datasets and implement reproducible evaluation before displaying model metrics.
+8. Add model registry, Streamlit observability dashboards, notifications, privacy controls, and end-to-end tests.

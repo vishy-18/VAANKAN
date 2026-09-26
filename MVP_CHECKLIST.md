@@ -13,8 +13,11 @@ This first version uses a small, clearly labelled mock dataset. It proves the op
 - [x] Report velocity panel with source health and processing health indicators
 - [x] Consolidated event list with status, location, report count, and timestamps
 - [x] Admin attention panel and review queue entry points
+- [x] Nearby Medavakkam rainfall event seeded at approximately 12.9506, 80.1419 with sample evidence records
+- [x] Alert detail evidence view with citizen reports, weather feed, media, and model explanation samples
 - [x] Admin review table with event, evidence signal, AI confidence, source, and received time
 - [x] Verify and inspect actions with feedback notifications
+- [x] Verified nearby alerts create portal, email, and SMS notification outbox records for users within 10 km
 - [x] Audit-trail reminder in the review workflow
 - [x] Mobile navigation and responsive table/layout behavior
 
@@ -23,7 +26,7 @@ This first version uses a small, clearly labelled mock dataset. It proves the op
 - [ ] Define FastAPI response contracts for dashboard KPIs, events, review queue, and filters
 - [ ] Replace mock records with a seed API and a small local PostgreSQL dataset
 - [ ] Add report detail drawer: raw text, image/video placeholder, metadata, evidence breakdown, and model version
-- [ ] Persist admin decisions, reason codes, operator identity, and timestamps
+- [ ] Persist admin decisions, reason codes, operator identity, and timestamps in the backend database
 - [ ] Add event merge/split and category correction actions
 - [ ] Add audit log view and export
 - [ ] Add source monitor for connector status, freshness, and failures
