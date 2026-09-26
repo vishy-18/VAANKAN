@@ -1,0 +1,38 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: vaankan-postgis
+    environment:
+      POSTGRES_DB: vaankan
+      POSTGRES_USER: vaankan
+      POSTGRES_PASSWORD: vaankan
+    ports:
+      - "5432:5432"
+    volumes:
+      - vaankan_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaankan -d vaankan"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgis-test:
+    image: postgis/postgis:16-3.4
+    container_name: vaankan-postgis-test
+    environment:
+      POSTGRES_DB: vaankan_test
+      POSTGRES_USER: vaankan
+      POSTGRES_PASSWORD: vaankan
+    ports:
+      - "5433:5432"
+    volumes:
+      - vaankan_test_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaankan -d vaankan_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  vaankan_pgdata:
+  vaankan_test_pgdata:

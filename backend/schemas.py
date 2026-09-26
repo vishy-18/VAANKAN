@@ -78,6 +78,43 @@ class WeatherObservation(BaseModel):
     event_type: EventType
 
 
+class GroundObservation(BaseModel):
+    observation_id: str
+    source: Literal["ADMIN_REVIEW"] = "ADMIN_REVIEW"
+    report_id: str
+    event_type: EventType
+    timestamp: datetime
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    city: str
+    district: str
+    state: str
+    verification_status: Literal["VERIFIED"] = "VERIFIED"
+    verification_method: Literal["admin"] = "admin"
+    verification_confidence: float | None = None
+
+
+class WeatherEvent(BaseModel):
+    event_id: str
+    event_type: EventType
+    title: str
+    city: str
+    district: str
+    state: str
+    latitude: float
+    longitude: float
+    first_seen_at: datetime
+    last_updated_at: datetime
+    status: Literal["DETECTED", "CORRELATED", "ACTIVE"]
+    severity: Literal["UNASSESSED"] = "UNASSESSED"
+    verified_report_count: int
+    verified_media_count: int
+    observation_ids: list[str]
+    meteorological_evidence: dict[str, float | None]
+    vayu_analysis: dict[str, float | None]
+    data_mode: Literal["DEMO"] = "DEMO"
+
+
 class HealthResponse(BaseModel):
     status: str
     mode: str

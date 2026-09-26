@@ -38,6 +38,7 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./Analysis.css";
+import VerifiedGroundPipelineTab from "./VerifiedGroundPipelineTab";
 import type {
   AnalysisFilters,
   AnalyticsSummary,
@@ -59,7 +60,7 @@ const DEFAULT_FILTERS: AnalysisFilters = {
   district: "All",
   severity: "All",
   dataSource: "All",
-  verificationStatus: "All",
+  verificationStatus: "VERIFIED",
 };
 
 const STATES = [
@@ -75,7 +76,6 @@ const EVENT_TYPES = [
 const SEVERITIES = ["All", "Low", "Moderate", "High", "Critical"];
 const DATE_RANGES = ["Today", "Last 24 hours", "Last 7 days", "Last 30 days"];
 const DATA_SOURCES = ["All", "Weather API", "IMD", "Public Dataset", "Citizen", "Social Media", "Satellite", "Radar"];
-const VSTATUS_OPTIONS = ["All", "VERIFIED", "PENDING", "SUSPICIOUS", "UNSUPPORTED"];
 
 // ─────────────────────────────────────────────────────────────────
 // Severity colour mapping helpers
@@ -188,7 +188,6 @@ function DonutChart({
     </div>
   );
 }
-
 /** Bar Chart List */
 function BarList({
   data,
@@ -217,9 +216,20 @@ function BarList({
     </ul>
   );
 }
-
-/** Leaflet map for Analysis — shows weather events */
-function AnalysisMap({ events }: { events: WeatherEvent[] }) {
+/** Leaflet map for Analysis — renders the supplied demo/API records only. */
+function AnalysisMap({
+  events,
+  observations = [],
+  showEvents = true,
+  showObservations = false,
+  onSelectEvent,
+}: {
+  events: WeatherEvent[];
+  observations?: WeatherObservation[];
+  showEvents?: boolean;
+  showObservations?: boolean;
+  onSelectEvent?: (event: WeatherEvent) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
 
@@ -251,13 +261,13 @@ function AnalysisMap({ events }: { events: WeatherEvent[] }) {
       }
     });
 
-    events.forEach((evt) => {
+    if (showEvents) events.forEach((evt) => {
       const colour =
         evt.severity === "Critical" ? "#c62828" :
         evt.severity === "High" ? "#e26b5d" :
         evt.severity === "Moderate" ? "#c78c27" : "#32b7c8";
 
-      L.circleMarker([evt.latitude, evt.longitude], {
+      const marker = L.circleMarker([evt.latitude, evt.longitude], {
         radius: evt.severity === "Critical" ? 14 : evt.severity === "High" ? 11 : 8,
         fillColor: colour,
         color: "#fff",
@@ -272,8 +282,25 @@ function AnalysisMap({ events }: { events: WeatherEvent[] }) {
           `<span style="font-size:11px;color:#666">${evt.eventType} · ${evt.severity} · Conf: ${evt.confidence}%</span>`,
           { maxWidth: 260 },
         );
+      if (onSelectEvent) marker.on("click", () => onSelectEvent(evt));
     });
-  }, [events]);
+
+    if (showObservations) observations.forEach((observation) => {
+      L.circleMarker([observation.latitude, observation.longitude], {
+        radius: 5,
+        fillColor: "#2c8c67",
+        color: "#fff",
+        weight: 1,
+        fillOpacity: 0.8,
+      })
+        .addTo(map)
+        .bindPopup(
+          `<strong>${observation.dataSource} observation</strong><br/>${observation.city}, ${observation.state}<br/>` +
+          `${observation.weatherCondition} · ${observation.dataQualityFlag} data quality`,
+          { maxWidth: 240 },
+        );
+    });
+  }, [events, observations, showEvents, showObservations, onSelectEvent]);
 
   return <div ref={containerRef} style={{ height: "100%", width: "100%" }} />;
 }
@@ -487,7 +514,7 @@ interface AnalysisPageProps {
 }
 
 export default function AnalysisPage({ onAction }: AnalysisPageProps) {
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(1);
   const [filters, setFilters] = useState<AnalysisFilters>(DEFAULT_FILTERS);
   const [summary, setSummary] = useState<AnalyticsSummary | null>(null);
   const [events, setEvents] = useState<WeatherEvent[]>([]);
@@ -590,22 +617,44 @@ export default function AnalysisPage({ onAction }: AnalysisPageProps) {
   const heatwaveEvents = events.filter((e) => e.eventType === "Heatwave");
 
   const tabs = [
-    { label: "Overview", icon: Activity, count: null },
+    { label: "Top Events", icon: BarChart2, count: events.length },
+    { label: "National Overview", icon: Activity, count: null },
     { label: "Weather Events", icon: CloudRain, count: events.length },
-    { label: "Precipitation & Storms", icon: Droplets, count: precipEvents.length },
-    { label: "Temperature & Wind", icon: Thermometer, count: tempWindEvents.length },
-    { label: "Flood & Drought", icon: Droplets, count: floodEvents.length },
-    { label: "Anomalies & Climate", icon: AlertTriangle, count: anomalies.length },
-    { label: "Citizen & AI Intelligence", icon: Brain, count: citizenReports.length },
-    { label: "Data Quality", icon: Database, count: null },
+    { label: "Rainfall Intelligence", icon: Droplets, count: precipEvents.length },
+    { label: "Temperature & Heatwave", icon: Thermometer, count: tempWindEvents.length },
+    { label: "Thunderstorm & Lightning", icon: Wind, count: events.filter((e) => ["Thunderstorm", "Lightning", "Hailstorm"].includes(e.eventType)).length },
+    { label: "Flood & Water Risk", icon: Droplets, count: floodEvents.length },
+    { label: "Wind & Dust Intelligence", icon: Wind, count: events.filter((e) => ["Strong Wind", "Dust Storm", "Cyclone"].includes(e.eventType)).length },
+    { label: "Fog & Visibility", icon: CloudRain, count: events.filter((e) => e.eventType === "Fog").length },
+    { label: "Cyclone Intelligence", icon: AlertTriangle, count: events.filter((e) => e.eventType === "Cyclone").length },
+    { label: "Weather Anomaly", icon: AlertTriangle, count: anomalies.length },
+    { label: "Drought & Climate Stress", icon: Flame, count: heatwaveEvents.length },
+    { label: "Historical & Climate Analysis", icon: Database, count: null },
+    { label: "Forecast vs Actual", icon: Brain, count: citizenReports.length },
+    { label: "Ground Evidence Pipeline", icon: Database, count: citizenReports.filter((report) => report.status === "VERIFIED").length },
+    { label: "Citizen Intelligence", icon: Users, count: citizenReports.length },
+    { label: "Warning Center", icon: AlertTriangle, count: events.filter((event) => ["High", "Critical"].includes(event.severity)).length },
+    { label: "Risk & Impact", icon: Activity, count: events.length },
+    { label: "Data Quality", icon: Database, count: observations.length },
   ];
+
+  const tabGroups = [
+    { label: "National Situation", icon: Activity, tabs: [1, 0] },
+    { label: "Weather Events", icon: CloudRain, tabs: [2] },
+    { label: "VAYU Intelligence", icon: Wind, tabs: [3, 4, 5, 6, 7, 8, 9, 10, 11] },
+    { label: "VISTA Intelligence", icon: ShieldCheck, tabs: [15, 14] },
+    { label: "Forecast", icon: Brain, tabs: [13] },
+    { label: "Historical / Climate", icon: Database, tabs: [12] },
+    { label: "Warning & Risk", icon: AlertTriangle, tabs: [16, 17] },
+    { label: "Data Quality", icon: Database, tabs: [18] },
+  ];
+  const activeGroup = tabGroups.find((group) => group.tabs.includes(activeTab)) ?? tabGroups[0];
 
   return (
     <div className="vayu-page">
       {/* ── Header */}
       <div className="vayu-header">
         <div className="vayu-header-left">
-          <p className="vayu-eyebrow">NATIONAL WEATHER INTELLIGENCE · ADMIN PORTAL</p>
           <div className="vayu-badges">
             <span className="vayu-badge demo">⬡ Demo Data</span>
             <span className="vayu-badge not-trained">⚠ Models Not Trained</span>
@@ -633,31 +682,6 @@ export default function AnalysisPage({ onAction }: AnalysisPageProps) {
             <BarChart2 size={14} /> Full Analytics
           </button>
         </div>
-      </div>
-
-      {/* ── Data Status Bar */}
-      <div className="vayu-status-bar">
-        <span className="status-item">
-          <span className="vayu-status-dot demo" /> IMD Feed · DEMO
-        </span>
-        <span className="status-item">
-          <span className="vayu-status-dot demo" /> Weather API · DEMO
-        </span>
-        <span className="status-item">
-          <span className="vayu-status-dot amber" /> Citizen Reports · Mock
-        </span>
-        <span className="status-item">
-          <span className="vayu-status-dot amber" /> Satellite · Mock
-        </span>
-        <span className="status-item error">
-          <span className="vayu-status-dot red" /> VAYU Model · NOT TRAINED
-        </span>
-        <span className="status-item error">
-          <span className="vayu-status-dot red" /> VISTA Model · NOT TRAINED
-        </span>
-        <span style={{ marginLeft: "auto", color: "#789096" }}>
-          Engine: {summary?.engine ?? "Loading…"}
-        </span>
       </div>
 
       {/* ── Global Filters */}
@@ -693,12 +717,6 @@ export default function AnalysisPage({ onAction }: AnalysisPageProps) {
           <label>Data Source</label>
           <select value={filters.dataSource} onChange={(e) => handleFilterChange("dataSource", e.target.value)}>
             {DATA_SOURCES.map((s) => <option key={s}>{s}</option>)}
-          </select>
-        </div>
-        <div className="vayu-filter-group">
-          <label>Verification</label>
-          <select value={filters.verificationStatus} onChange={(e) => handleFilterChange("verificationStatus", e.target.value)}>
-            {VSTATUS_OPTIONS.map((s) => <option key={s}>{s}</option>)}
           </select>
         </div>
         <button className="vayu-filter-reset" onClick={resetFilters}>
@@ -759,14 +777,36 @@ export default function AnalysisPage({ onAction }: AnalysisPageProps) {
       </div>
 
       {/* ── Sub-Tab Navigation */}
-      <div className="vayu-tabs">
-        {tabs.map((tab, i) => {
+      <div className="vayu-tabs vayu-primary-tabs" role="tablist" aria-label="Analysis sections">
+        {tabGroups.map((group) => {
+          const Icon = group.icon;
+          const selected = group.tabs.includes(activeTab);
+          return (
+            <button
+              key={group.label}
+              role="tab"
+              aria-selected={selected}
+              className={`vayu-tab-btn ${selected ? "active" : ""}`}
+              onClick={() => setActiveTab(group.tabs[0])}
+            >
+              <Icon size={13} />
+              {group.label}
+            </button>
+          );
+        })}
+      </div>
+      {activeGroup.tabs.length > 1 && (
+        <div className="vayu-tabs vayu-secondary-tabs" role="tablist" aria-label={`${activeGroup.label} views`}>
+          {activeGroup.tabs.map((tabIndex) => {
+            const tab = tabs[tabIndex];
           const Icon = tab.icon;
           return (
             <button
-              key={tab.label}
-              className={`vayu-tab-btn ${activeTab === i ? "active" : ""}`}
-              onClick={() => setActiveTab(i)}
+              key={tabIndex}
+              role="tab"
+              aria-selected={activeTab === tabIndex}
+              className={`vayu-tab-btn ${activeTab === tabIndex ? "active" : ""}`}
+              onClick={() => setActiveTab(tabIndex)}
             >
               <Icon size={13} />
               {tab.label}
@@ -775,8 +815,9 @@ export default function AnalysisPage({ onAction }: AnalysisPageProps) {
               )}
             </button>
           );
-        })}
-      </div>
+          })}
+        </div>
+      )}
 
       {/* ── Loading overlay */}
       {loading && (
@@ -790,42 +831,62 @@ export default function AnalysisPage({ onAction }: AnalysisPageProps) {
       {!loading && (
         <>
           {activeTab === 0 && (
-            <OverviewTab
+            <TopEventsTab events={events} onSelectEvent={setSelectedEvent} />
+          )}
+          {activeTab === 1 && (
+            <NationalOverviewTab
               events={events}
               summary={summary}
               eventDistData={eventDistData}
               donutColours={donutColours}
               sourceBarData={sourceBarData}
+              observations={observations}
+              referenceTime={lastUpdated}
               onSelectEvent={setSelectedEvent}
             />
           )}
-          {activeTab === 1 && (
+          {activeTab === 2 && (
             <WeatherEventsTab
               events={events}
               onSelectEvent={setSelectedEvent}
             />
           )}
-          {activeTab === 2 && (
+          {activeTab === 3 && (
             <PrecipitationTab events={precipEvents} observations={observations} />
           )}
-          {activeTab === 3 && (
+          {activeTab === 4 && (
             <TempWindTab events={tempWindEvents} observations={observations} />
           )}
-          {activeTab === 4 && (
-            <FloodDroughtTab floodEvents={floodEvents} heatwaveEvents={heatwaveEvents} />
-          )}
           {activeTab === 5 && (
-            <AnomaliesTab anomalies={anomalies} />
+            <ThunderstormLightningTab events={events} />
           )}
           {activeTab === 6 && (
-            <CitizenAITab
-              citizenReports={citizenReports}
-              events={events}
-            />
+            <FloodDroughtTab floodEvents={floodEvents} heatwaveEvents={heatwaveEvents} />
           )}
           {activeTab === 7 && (
-            <DataQualityTab observations={observations} />
+            <WindDustTab events={events} />
           )}
+          {activeTab === 8 && (
+            <FogVisibilityTab events={events} />
+          )}
+          {activeTab === 9 && (
+            <CycloneTab events={events} />
+          )}
+          {activeTab === 10 && (
+            <AnomaliesTab anomalies={anomalies} />
+          )}
+          {activeTab === 11 && (
+            <DroughtStressTab events={events} />
+          )}
+          {activeTab === 12 && (
+            <HistoricalClimateTab observations={observations} events={events} />
+          )}
+          {activeTab === 13 && <ForecastActualTab />}
+          {activeTab === 14 && <VerifiedGroundPipelineTab />}
+          {activeTab === 15 && <CitizenIntelligenceTab reports={citizenReports} />}
+          {activeTab === 16 && <WarningCenterTab events={events} onSelectEvent={setSelectedEvent} />}
+          {activeTab === 17 && <RiskImpactTab events={events} onSelectEvent={setSelectedEvent} />}
+          {activeTab === 18 && <DataQualityCenterTab observations={observations} />}
         </>
       )}
 
@@ -838,15 +899,117 @@ export default function AnalysisPage({ onAction }: AnalysisPageProps) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Tab 0: Overview
+// Top Events
 // ─────────────────────────────────────────────────────────────────
 
-function OverviewTab({
+function TopEventsTab({
+  events,
+  onSelectEvent,
+}: {
+  events: WeatherEvent[];
+  onSelectEvent: (evt: WeatherEvent) => void;
+}) {
+  return (
+    <>
+      <div className="vayu-grid-main">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Top Event Feed</p>
+              <h3 className="vayu-panel-title">Verified event stream — last 50 updates</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-map-wrap" style={{ height: 260 }}>
+              <AnalysisMap events={events} />
+            </div>
+            <div className="vayu-map-legend" style={{ marginTop: 10 }}>
+              <span><span className="vayu-legend-dot critical" /> Critical</span>
+              <span><span className="vayu-legend-dot high" /> High</span>
+              <span><span className="vayu-legend-dot moderate" /> Moderate</span>
+              <span><span className="vayu-legend-dot low" /> Low</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Priority Summary</p>
+              <h3 className="vayu-panel-title">Event intensity snapshot</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <BarList
+              data={[
+                { label: "Critical", value: events.filter((e) => e.severity === "Critical").length },
+                { label: "High", value: events.filter((e) => e.severity === "High").length },
+                { label: "Moderate", value: events.filter((e) => e.severity === "Moderate").length },
+                { label: "Low", value: events.filter((e) => e.severity === "Low").length },
+              ]}
+              colour="coral"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="vayu-panel">
+        <div className="vayu-panel-header">
+          <div>
+            <p className="vayu-panel-kicker">Recent Verified Events</p>
+            <h3 className="vayu-panel-title">Top events list</h3>
+          </div>
+          <span style={{ font: "9px 'DM Mono', monospace", color: "#789196" }}>{events.length} records</span>
+        </div>
+        <div className="vayu-panel-body no-pad">
+          <div className="vayu-table-wrap">
+            <table className="vayu-table">
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Location</th>
+                  <th>Severity</th>
+                  <th>Confidence</th>
+                  <th>Rainfall</th>
+                  <th>Temp</th>
+                  <th>Wind</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.slice(0, 50).map((evt) => (
+                  <tr key={evt.eventId} style={{ cursor: "pointer" }} onClick={() => onSelectEvent(evt)}>
+                    <td><strong>{evt.title}</strong></td>
+                    <td>{evt.city}, {evt.state}</td>
+                    <td><span className={`vayu-severity ${severityClass(evt.severity)}`}>{evt.severity}</span></td>
+                    <td className="mono">{evt.confidence}%</td>
+                    <td className="mono">{evt.rainfallMm} mm</td>
+                    <td className="mono">{evt.temperatureC}°C</td>
+                    <td className="mono">{evt.windSpeedKmh} km/h</td>
+                    <td className="dim">{evt.source}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Tab 0 / National Overview
+// ─────────────────────────────────────────────────────────────────
+
+function NationalOverviewTab({
   events,
   summary,
   eventDistData,
   donutColours,
   sourceBarData,
+  observations,
+  referenceTime,
   onSelectEvent,
 }: {
   events: WeatherEvent[];
@@ -854,31 +1017,81 @@ function OverviewTab({
   eventDistData: { label: string; value: number }[];
   donutColours: string[];
   sourceBarData: { label: string; value: number }[];
+  observations: WeatherObservation[];
+  referenceTime: Date;
   onSelectEvent: (evt: WeatherEvent) => void;
 }) {
+  const [showEventLayer, setShowEventLayer] = useState(true);
+  const [showObservationLayer, setShowObservationLayer] = useState(false);
+  const [hoursBack, setHoursBack] = useState(0);
+  const availableTimestamps = [...events.map((event) => event.timestamp), ...observations.map((observation) => observation.timestamp)]
+    .map((timestamp) => new Date(timestamp).getTime())
+    .filter(Number.isFinite);
+  const datasetReferenceTime = availableTimestamps.length ? Math.max(...availableTimestamps) : referenceTime.getTime();
+  const cutoff = datasetReferenceTime - hoursBack * 60 * 60 * 1000;
+  const mapEvents = events.filter((event) => new Date(event.timestamp).getTime() <= cutoff);
+  const mapObservations = observations.filter((observation) => new Date(observation.timestamp).getTime() <= cutoff);
+  const stateBreakdown = Object.entries(
+    events.reduce<Record<string, number>>((acc, evt) => {
+      acc[evt.state] = (acc[evt.state] ?? 0) + 1;
+      return acc;
+    }, {}),
+  ).sort((a, b) => b[1] - a[1]).slice(0, 6);
+
   return (
     <>
-      {/* Map + Event Distribution */}
       <div className="vayu-grid-main">
         <div className="vayu-panel">
           <div className="vayu-panel-header">
             <div>
-              <p className="vayu-panel-kicker">Spatial Hotspot Map</p>
-              <h3 className="vayu-panel-title">Verified Weather Event Hotspots</h3>
+              <p className="vayu-panel-kicker">National Overview</p>
+              <h3 className="vayu-panel-title">National event and observation map</h3>
             </div>
-            <span style={{ font: "9px 'DM Mono', monospace", color: "#789196" }}>
-              {events.length} events · DEMO
-            </span>
+            <span className="vayu-demo-label">DEMO RECORDS · NOT LIVE</span>
           </div>
           <div className="vayu-map-wrap">
-            <AnalysisMap events={events} />
+            <AnalysisMap
+              events={mapEvents}
+              observations={mapObservations}
+              showEvents={showEventLayer}
+              showObservations={showObservationLayer}
+              onSelectEvent={onSelectEvent}
+            />
+          </div>
+          <div className="vayu-map-layer-controls">
+            <button
+              type="button"
+              className={`vayu-map-layer-btn ${showEventLayer ? "active" : ""}`}
+              aria-pressed={showEventLayer}
+              onClick={() => setShowEventLayer((visible) => !visible)}
+            >
+              Weather events ({mapEvents.length})
+            </button>
+            <button
+              type="button"
+              className={`vayu-map-layer-btn ${showObservationLayer ? "active" : ""}`}
+              aria-pressed={showObservationLayer}
+              onClick={() => setShowObservationLayer((visible) => !visible)}
+            >
+              Weather observations · DEMO ({mapObservations.length})
+            </button>
+            <label className="vayu-map-time-control">
+              Demo dataset cutoff: {formatIST(new Date(cutoff).toISOString())}
+              <input
+                type="range"
+                min="0"
+                max="3"
+                step="1"
+                value={hoursBack}
+                onChange={(event) => setHoursBack(Number(event.target.value))}
+                aria-label="Map time cutoff, from current demo data to three hours ago"
+              />
+            </label>
           </div>
           <div className="vayu-map-legend">
-            <span><span className="vayu-legend-dot critical" /> Critical</span>
-            <span><span className="vayu-legend-dot high" /> High</span>
-            <span><span className="vayu-legend-dot moderate" /> Moderate</span>
-            <span><span className="vayu-legend-dot low" /> Low</span>
-            <span style={{ marginLeft: "auto" }}>Leaflet · OSM · DEMO data only</span>
+            <span><span className="vayu-legend-dot high" /> Weather event</span>
+            <span><span className="vayu-legend-dot observation" /> Demo observation</span>
+            <span className="vayu-map-source-note">No radar, satellite, or future forecast layer is connected.</span>
           </div>
         </div>
 
@@ -886,8 +1099,8 @@ function OverviewTab({
           <div className="vayu-panel" style={{ marginBottom: 14 }}>
             <div className="vayu-panel-header">
               <div>
-                <p className="vayu-panel-kicker">Event Distribution</p>
-                <h3 className="vayu-panel-title">By Category</h3>
+                <p className="vayu-panel-kicker">Distribution</p>
+                <h3 className="vayu-panel-title">Event mix by category</h3>
               </div>
             </div>
             <div className="vayu-panel-body">
@@ -902,8 +1115,8 @@ function OverviewTab({
           <div className="vayu-panel">
             <div className="vayu-panel-header">
               <div>
-                <p className="vayu-panel-kicker">Signal Sources</p>
-                <h3 className="vayu-panel-title">By Data Source</h3>
+                <p className="vayu-panel-kicker">Signal sources</p>
+                <h3 className="vayu-panel-title">Source contribution</h3>
               </div>
             </div>
             <div className="vayu-panel-body">
@@ -917,34 +1130,58 @@ function OverviewTab({
         </div>
       </div>
 
-      {/* Recent Events */}
+      <div className="vayu-grid-3">
+        {stateBreakdown.map(([state, count]) => (
+          <div key={state} className="vayu-dq-card">
+            <div className="src-name">{state}</div>
+            <strong style={{ font: "500 24px 'DM Mono', monospace", color: "#17354a" }}>{count}</strong>
+            <div className="vayu-dq-freshness">active verified weather events</div>
+          </div>
+        ))}
+      </div>
+
       <div className="vayu-panel">
         <div className="vayu-panel-header">
           <div>
-            <p className="vayu-panel-kicker">Most Recent Events</p>
-            <h3 className="vayu-panel-title">Active Weather Events — Click to Inspect</h3>
+            <p className="vayu-panel-kicker">Key operational indicators</p>
+            <h3 className="vayu-panel-title">National summary</h3>
           </div>
-          <span style={{ font: "9px 'DM Mono', monospace", color: "#789196" }}>
-            {events.length} total
-          </span>
+        </div>
+        <div className="vayu-panel-body">
+          <div className="vayu-grid-3">
+            <div className="vayu-dq-card">
+              <div className="src-name">Active Events</div>
+              <div className="src-status live">{summary?.activeEventsCount ?? 0}</div>
+              <div className="vayu-dq-freshness">weather alerts in policy window</div>
+            </div>
+            <div className="vayu-dq-card">
+              <div className="src-name">High / Critical</div>
+              <div className="src-status demo">{summary?.highSeverityCount ?? 0}</div>
+              <div className="vayu-dq-freshness">severe risk watchlist</div>
+            </div>
+            <div className="vayu-dq-card">
+              <div className="src-name">Affected Districts</div>
+              <div className="src-status mock">{summary?.affectedDistrictsCount ?? 0}</div>
+              <div className="vayu-dq-freshness">districts under observation</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="vayu-panel">
+        <div className="vayu-panel-header">
+          <div>
+            <p className="vayu-panel-kicker">Recent hotspots</p>
+            <h3 className="vayu-panel-title">The highest confidence verified events</h3>
+          </div>
         </div>
         <ul className="vayu-event-list">
           {events.slice(0, 6).map((evt) => (
-            <li
-              key={evt.eventId}
-              className="vayu-event-item"
-              onClick={() => onSelectEvent(evt)}
-            >
-              <div className={`vayu-event-icon ${eventIconColour(evt.eventType)}`}>
-                <CloudRain size={16} />
-              </div>
+            <li key={evt.eventId} className="vayu-event-item" onClick={() => onSelectEvent(evt)}>
+              <div className={`vayu-event-icon ${eventIconColour(evt.eventType)}`}><CloudRain size={16} /></div>
               <div className="vayu-event-info">
                 <strong>{evt.title}</strong>
-                <small>
-                  <span>{evt.city}, {evt.state}</span>
-                  ·
-                  <span>{formatIST(evt.timestamp)}</span>
-                </small>
+                <small><span>{evt.city}, {evt.state}</span> · <span>{formatIST(evt.timestamp)}</span></small>
               </div>
               <div className="vayu-event-meta">
                 <span className={`vayu-severity ${severityClass(evt.severity)}`}>{evt.severity}</span>
@@ -954,69 +1191,537 @@ function OverviewTab({
             </li>
           ))}
         </ul>
-        {events.length === 0 && <div className="vayu-empty">No events match current filters.</div>}
       </div>
+    </>
+  );
+}
 
-      {/* Summary stats */}
-      {summary && (
-        <div className="vayu-grid-3">
-          <div className="vayu-panel">
-            <div className="vayu-panel-header">
-              <div>
-                <p className="vayu-panel-kicker">Pipeline Summary</p>
-                <h3 className="vayu-panel-title">Verification Stats</h3>
-              </div>
-            </div>
-            <div className="vayu-panel-body">
-              <BarList
-                data={[
-                  { label: "Verified", value: summary.verifiedReports },
-                  { label: "Pending", value: summary.pendingReports },
-                  { label: "Suspicious", value: summary.suspiciousReports },
-                ]}
-                colour="green"
-              />
+function CitizenIntelligenceTab({ reports }: { reports: CitizenAnalysisReport[] }) {
+  const statusCounts = [
+    { label: "Verified", value: reports.filter((report) => report.status === "VERIFIED").length },
+    { label: "Pending", value: reports.filter((report) => report.status === "PENDING").length },
+    { label: "Suspicious", value: reports.filter((report) => report.status === "SUSPICIOUS").length },
+    { label: "Unsupported", value: reports.filter((report) => report.status === "UNSUPPORTED").length },
+  ];
+  const categories = Object.entries(reports.reduce<Record<string, number>>((counts, report) => {
+    counts[report.category] = (counts[report.category] ?? 0) + 1;
+    return counts;
+  }, {})).map(([label, value]) => ({ label, value }));
+  const states = Object.entries(reports.reduce<Record<string, number>>((counts, report) => {
+    counts[report.state] = (counts[report.state] ?? 0) + 1;
+    return counts;
+  }, {})).map(([label, value]) => ({ label, value }));
+
+  return (
+    <>
+      <div className="vayu-pipeline-note">DEMO GROUND REPORTS · Citizen observations are not official meteorological measurements. VISTA automation and source trust scoring are not connected.</div>
+      <div className="vayu-grid-3">
+        <div className="vayu-panel"><div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Ground reports</p><h3 className="vayu-panel-title">Verification status</h3></div></div><div className="vayu-panel-body"><BarList data={statusCounts} colour="green" /></div></div>
+        <div className="vayu-panel"><div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Report classification</p><h3 className="vayu-panel-title">By event type</h3></div></div><div className="vayu-panel-body">{categories.length ? <BarList data={categories} colour="cyan" /> : <div className="vayu-empty">No reports in the selected window.</div>}</div></div>
+        <div className="vayu-panel"><div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Geographic distribution</p><h3 className="vayu-panel-title">Reports by state</h3></div></div><div className="vayu-panel-body">{states.length ? <BarList data={states} colour="amber" /> : <div className="vayu-empty">No reports in the selected window.</div>}</div></div>
+      </div>
+      <div className="vayu-panel">
+        <div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Citizen observations</p><h3 className="vayu-panel-title">Recent ground reports</h3></div><span className="vayu-demo-label">{reports.length} DEMO RECORDS</span></div>
+        {reports.length ? reports.slice(0, 30).map((report) => (
+          <div className="vayu-cit-item" key={report.reportId}>
+            <div className="vayu-cit-avatar"><CloudRain size={14} /></div>
+            <div className="vayu-cit-body"><strong>{report.category} · {report.city}, {report.state}</strong><p>{report.text}</p><div className="vayu-cit-meta"><span className={`vayu-vstatus ${verificationClass(report.status)}`}>{report.status}</span><span className="vayu-cit-time">{formatIST(report.timestamp)}</span></div></div>
+          </div>
+        )) : <div className="vayu-empty">No citizen reports match current filters.</div>}
+      </div>
+    </>
+  );
+}
+
+function WarningCenterTab({ events, onSelectEvent }: { events: WeatherEvent[]; onSelectEvent: (event: WeatherEvent) => void }) {
+  const candidates = events.filter((event) => event.severity === "High" || event.severity === "Critical");
+  return (
+    <>
+      <div className="vayu-pipeline-note warning">VAANKAN DETECTED EVENTS · DEMO ONLY · NOT OFFICIAL WARNINGS. Confirm authoritative warning status from the responsible agency.</div>
+      <div className="vayu-panel">
+        <div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Decision support</p><h3 className="vayu-panel-title">High-severity event candidates</h3></div><span className="vayu-demo-label">{candidates.length} DEMO CANDIDATES</span></div>
+        {candidates.length ? candidates.map((event) => (
+          <button type="button" className="vayu-warning-row" key={event.eventId} onClick={() => onSelectEvent(event)}>
+            <span className={`vayu-severity ${severityClass(event.severity)}`}>{event.severity}</span>
+            <span className="vayu-warning-title"><strong>{event.title}</strong><small>{event.city}, {event.district}, {event.state}</small></span>
+            <span className="vayu-warning-meta">VAANKAN DETECTED<br />{formatIST(event.timestamp)}</span>
+            <ArrowUpRight size={15} />
+          </button>
+        )) : <div className="vayu-empty">No high-severity demo events match current filters.</div>}
+      </div>
+    </>
+  );
+}
+
+function RiskImpactTab({ events, onSelectEvent }: { events: WeatherEvent[]; onSelectEvent: (event: WeatherEvent) => void }) {
+  return (
+    <>
+      <div className="vayu-pipeline-note">VAANKAN DECISION SUPPORT · Population and infrastructure exposure datasets are not connected. No impact estimates are generated.</div>
+      <div className="vayu-panel">
+        <div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Event extent</p><h3 className="vayu-panel-title">Known demo evidence and unavailable exposure</h3></div><span className="vayu-demo-label">ILLUSTRATIVE INPUTS</span></div>
+        <div className="vayu-panel-body no-pad"><div className="vayu-table-wrap"><table className="vayu-table"><thead><tr><th>Event</th><th>Location</th><th>Severity</th><th>Demo radius</th><th>Ground reports</th><th>Population / infrastructure</th></tr></thead><tbody>
+          {events.map((event) => <tr key={event.eventId} onClick={() => onSelectEvent(event)} style={{ cursor: "pointer" }}><td>{event.title}</td><td>{event.city}, {event.state}</td><td><span className={`vayu-severity ${severityClass(event.severity)}`}>{event.severity}</span></td><td className="mono">{event.affectedRadiusKm.toFixed(1)} km · DEMO</td><td className="mono">{event.verifiedReportCount} verified / {event.reportCount} total</td><td className="dim">Not connected</td></tr>)}
+        </tbody></table></div>{events.length === 0 && <div className="vayu-empty">No events match current filters.</div>}</div>
+      </div>
+    </>
+  );
+}
+
+function DataQualityCenterTab({ observations }: { observations: WeatherObservation[] }) {
+  const flags = [
+    { label: "Good", value: observations.filter((observation) => observation.dataQualityFlag === "Good").length },
+    { label: "Questionable / Suspect", value: observations.filter((observation) => observation.dataQualityFlag === "Suspect").length },
+    { label: "Estimated", value: observations.filter((observation) => observation.dataQualityFlag === "Estimated").length },
+  ];
+  const sources = [...new Set(observations.map((observation) => observation.dataSource))];
+  return (
+    <>
+      <div className="vayu-pipeline-note">DEMO OBSERVATION SAMPLE · These counts describe the selected local dataset only; they are not national coverage or live source-health metrics.</div>
+      <div className="vayu-grid-2">
+        <div className="vayu-panel"><div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Observation flags</p><h3 className="vayu-panel-title">Sample data quality distribution</h3></div></div><div className="vayu-panel-body">{observations.length ? <BarList data={flags} colour="green" /> : <div className="vayu-empty">No observations in the selected window.</div>}</div></div>
+        <div className="vayu-panel"><div className="vayu-panel-header"><div><p className="vayu-panel-kicker">Provenance</p><h3 className="vayu-panel-title">Sample source coverage</h3></div></div><div className="vayu-panel-body"><div className="vayu-metric-row"><span className="vayu-metric-label">Observations in view</span><span className="vayu-metric-value">{observations.length}</span></div><div className="vayu-metric-row"><span className="vayu-metric-label">States represented</span><span className="vayu-metric-value">{new Set(observations.map((observation) => observation.state)).size}</span></div><div className="vayu-metric-row"><span className="vayu-metric-label">Sample sources</span><span className="vayu-metric-value">{sources.join(", ") || "None"}</span></div><div className="vayu-metric-row"><span className="vayu-metric-label">Live health / freshness</span><span className="vayu-metric-value">Not connected</span></div></div></div>
+      </div>
+    </>
+  );
+}
+
+function ThunderstormLightningTab({ events }: { events: WeatherEvent[] }) {
+  const thunder = events.filter((e) => ["Thunderstorm", "Lightning", "Hailstorm"].includes(e.eventType));
+  const peak = thunder.reduce((max, e) => Math.max(max, e.windSpeedKmh), 0);
+
+  return (
+    <>
+      <div className="vayu-grid-2">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Convective Activity</p>
+              <h3 className="vayu-panel-title">Thunderstorm & lightning watch</h3>
             </div>
           </div>
-          <div className="vayu-panel">
-            <div className="vayu-panel-header">
-              <div>
-                <p className="vayu-panel-kicker">Risk Summary</p>
-                <h3 className="vayu-panel-title">Event Severity Breakdown</h3>
-              </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Active Convective Events</span>
+              <span className="vayu-metric-value high">{thunder.length}</span>
             </div>
-            <div className="vayu-panel-body">
-              <BarList
-                data={[
-                  { label: "Critical", value: events.filter((e) => e.severity === "Critical").length },
-                  { label: "High", value: events.filter((e) => e.severity === "High").length },
-                  { label: "Moderate", value: events.filter((e) => e.severity === "Moderate").length },
-                  { label: "Low", value: events.filter((e) => e.severity === "Low").length },
-                ]}
-                colour="coral"
-              />
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Peak Wind Speed</span>
+              <span className="vayu-metric-value high">{peak} km/h</span>
             </div>
-          </div>
-          <div className="vayu-panel">
-            <div className="vayu-panel-header">
-              <div>
-                <p className="vayu-panel-kicker">Geographic Spread</p>
-                <h3 className="vayu-panel-title">Events by State</h3>
-              </div>
-            </div>
-            <div className="vayu-panel-body">
-              <BarList
-                data={(() => {
-                  const counts: Record<string, number> = {};
-                  events.forEach((e) => { counts[e.state] = (counts[e.state] || 0) + 1; });
-                  return Object.entries(counts).map(([label, value]) => ({ label, value }));
-                })()}
-                colour="amber"
-              />
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Hailstorm Cells</span>
+              <span className="vayu-metric-value moderate">{events.filter((e) => e.eventType === "Hailstorm").length}</span>
             </div>
           </div>
         </div>
-      )}
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Current risk</p>
+              <h3 className="vayu-panel-title">Severe convective intensity</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <BarList
+              data={thunder.slice(0, 6).map((e) => ({ label: `${e.city} (${e.state.slice(0, 3)})`, value: e.confidence, suffix: "%" }))}
+              colour="amber"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="vayu-panel">
+        <div className="vayu-panel-header">
+          <div>
+            <p className="vayu-panel-kicker">Details</p>
+            <h3 className="vayu-panel-title">Thunderstorm & lightning event log</h3>
+          </div>
+        </div>
+        <div className="vayu-panel-body no-pad">
+          <div className="vayu-table-wrap">
+            <table className="vayu-table">
+              <thead>
+                <tr>
+                  <th>Event</th>
+                  <th>Location</th>
+                  <th>Rainfall</th>
+                  <th>Wind</th>
+                  <th>Severity</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {thunder.map((evt) => (
+                  <tr key={evt.eventId}>
+                    <td>{evt.eventType}</td>
+                    <td>{evt.city}, {evt.state}</td>
+                    <td className="mono">{evt.rainfallMm} mm</td>
+                    <td className="mono">{evt.windSpeedKmh} km/h</td>
+                    <td><span className={`vayu-severity ${severityClass(evt.severity)}`}>{evt.severity}</span></td>
+                    <td className="mono">{evt.confidence}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function WindDustTab({ events }: { events: WeatherEvent[] }) {
+  const windEvents = events.filter((e) => ["Strong Wind", "Dust Storm", "Cyclone"].includes(e.eventType));
+  const maxGust = windEvents.reduce((max, e) => Math.max(max, e.windSpeedKmh), 0);
+
+  return (
+    <>
+      <div className="vayu-grid-2">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Wind Field</p>
+              <h3 className="vayu-panel-title">Strong wind & dust storm fields</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">High Wind Events</span>
+              <span className="vayu-metric-value high">{windEvents.length}</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Peak Gust</span>
+              <span className="vayu-metric-value high">{maxGust} km/h</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Dust Storm Cells</span>
+              <span className="vayu-metric-value moderate">{events.filter((e) => e.eventType === "Dust Storm").length}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Warning Summary</p>
+              <h3 className="vayu-panel-title">Wind and dust exposure</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <BarList
+              data={windEvents.slice(0, 6).map((e) => ({ label: `${e.city} (${e.state.slice(0, 3)})`, value: e.windSpeedKmh, suffix: " km/h" }))}
+              colour="amber"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="vayu-panel">
+        <div className="vayu-panel-header">
+          <div>
+            <p className="vayu-panel-kicker">Wind / dust log</p>
+            <h3 className="vayu-panel-title">Strong winds, gusts and dust events</h3>
+          </div>
+        </div>
+        <div className="vayu-panel-body no-pad">
+          <div className="vayu-table-wrap">
+            <table className="vayu-table">
+              <thead>
+                <tr>
+                  <th>Event Type</th>
+                  <th>Location</th>
+                  <th>Wind</th>
+                  <th>Visibility</th>
+                  <th>Radius</th>
+                  <th>Severity</th>
+                </tr>
+              </thead>
+              <tbody>
+                {windEvents.map((evt) => (
+                  <tr key={evt.eventId}>
+                    <td>{evt.eventType}</td>
+                    <td>{evt.city}, {evt.state}</td>
+                    <td className="mono">{evt.windSpeedKmh} km/h</td>
+                    <td className="mono">{evt.visibilityKm ?? 0} km</td>
+                    <td className="mono">{evt.affectedRadiusKm} km</td>
+                    <td><span className={`vayu-severity ${severityClass(evt.severity)}`}>{evt.severity}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function FogVisibilityTab({ events }: { events: WeatherEvent[] }) {
+  const fogEvents = events.filter((e) => e.eventType === "Fog");
+  const avgVis = fogEvents.length
+    ? fogEvents.reduce((sum, e) => sum + (e.visibilityKm ?? 0), 0) / fogEvents.length
+    : 0;
+
+  return (
+    <>
+      <div className="vayu-grid-2">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Visibility degradation</p>
+              <h3 className="vayu-panel-title">Fog and reduced visibility</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Fog Events</span>
+              <span className="vayu-metric-value moderate">{fogEvents.length}</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Average Visibility</span>
+              <span className="vayu-metric-value high">{avgVis.toFixed(1)} km</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Affected Districts</span>
+              <span className="vayu-metric-value low">{new Set(fogEvents.map((e) => e.district)).size}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Risk matrix</p>
+              <h3 className="vayu-panel-title">Low-visibility impact</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <BarList
+              data={fogEvents.slice(0, 6).map((e) => ({ label: `${e.city} (${e.state.slice(0, 3)})`, value: Number((e.visibilityKm ?? 0).toFixed(1)), suffix: " km" }))}
+              colour="cyan"
+            />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function CycloneTab({ events }: { events: WeatherEvent[] }) {
+  const cycloneEvents = events.filter((e) => e.eventType === "Cyclone");
+
+  return (
+    <>
+      <div className="vayu-grid-2">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Cyclone track</p>
+              <h3 className="vayu-panel-title">Storm path and coastal exposure</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Cyclone Watches</span>
+              <span className="vayu-metric-value high">{cycloneEvents.length}</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Maximum Risk Radius</span>
+              <span className="vayu-metric-value high">{cycloneEvents.reduce((max, e) => Math.max(max, e.affectedRadiusKm), 0)} km</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Primary Coastal States</span>
+              <span className="vayu-metric-value moderate">{new Set(cycloneEvents.map((e) => e.state)).size}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Risk intensity</p>
+              <h3 className="vayu-panel-title">Cyclone intensity benchmark</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <BarList
+              data={cycloneEvents.slice(0, 6).map((e) => ({ label: `${e.city}, ${e.state}`, value: e.confidence, suffix: "%" }))}
+              colour="coral"
+            />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function DroughtStressTab({ events }: { events: WeatherEvent[] }) {
+  const heat = events.filter((e) => e.eventType === "Heatwave");
+  const dryStress = heat.length + events.filter((e) => e.eventType === "Dust Storm").length;
+
+  return (
+    <>
+      <div className="vayu-grid-2">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Climate stress</p>
+              <h3 className="vayu-panel-title">Drought and heat stress index</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Heatwave Areas</span>
+              <span className="vayu-metric-value high">{heat.length}</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Dry Stress Signals</span>
+              <span className="vayu-metric-value moderate">{dryStress}</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">SPI Data Status</span>
+              <span className="vayu-metric-value low">Mock</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Heat stress</p>
+              <h3 className="vayu-panel-title">Peak temperature summary</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <BarList
+              data={heat.slice(0, 6).map((e) => ({ label: `${e.city}`, value: e.temperatureC, suffix: "°C" }))}
+              colour="coral"
+            />
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function HistoricalClimateTab({ observations, events }: { observations: WeatherObservation[]; events: WeatherEvent[] }) {
+  const avgRain = observations.reduce((sum, o) => sum + o.rainfall24hMm, 0) / Math.max(observations.length, 1);
+  const avgTemp = observations.reduce((sum, o) => sum + o.temperatureC, 0) / Math.max(observations.length, 1);
+  const avgRainAnomaly = observations.reduce((sum, observation) => sum + observation.rainfallAnomaly, 0) / Math.max(observations.length, 1);
+  const avgTemperatureAnomaly = observations.reduce((sum, observation) => sum + observation.temperatureAnomaly, 0) / Math.max(observations.length, 1);
+  const avgWindAnomaly = observations.reduce((sum, observation) => sum + observation.windAnomaly, 0) / Math.max(observations.length, 1);
+
+  return (
+    <>
+      <div className="vayu-grid-3">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Climate baseline</p>
+              <h3 className="vayu-panel-title">Current vs expected</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Mean 24h Rainfall</span>
+              <span className="vayu-metric-value">{avgRain.toFixed(1)} mm</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Mean Temperature</span>
+              <span className="vayu-metric-value">{avgTemp.toFixed(1)}°C</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Event Count</span>
+              <span className="vayu-metric-value">{events.length}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Multi-year trend</p>
+              <h3 className="vayu-panel-title">Historical comparison summary</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+              <div className="vayu-pipeline-note">DEMO OBSERVATIONS · Averages below are computed from the selected sample, not official climate normals.</div>
+            <BarList
+              data={[
+                { label: "Rainfall anomaly", value: Math.abs(avgRainAnomaly), suffix: " sample units" },
+                { label: "Temperature anomaly", value: Math.abs(avgTemperatureAnomaly), suffix: " °C" },
+                { label: "Wind anomaly", value: Math.abs(avgWindAnomaly), suffix: " sample units" },
+              ]}
+              colour="green"
+            />
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Baseline note</p>
+              <h3 className="vayu-panel-title">Model assumption</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div style={{ fontSize: 11, color: "#8a9a9c", lineHeight: 1.7 }}>
+              Historical benchmarking is intentionally illustrative in demo mode and requires long-range climatology datasets for fully calibrated comparisons.
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ForecastActualTab() {
+  return (
+    <>
+      <div className="vayu-pipeline-note">DEMO / NOT CONNECTED · Forecast-observation pairs are unavailable. No accuracy or error metrics are reported.</div>
+      <div className="vayu-grid-2">
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Forecast intelligence</p>
+              <h3 className="vayu-panel-title">Forecast vs actual comparison</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Forecast feed</span>
+              <span className="vayu-metric-value">Not connected</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">Matched forecast / observation pairs</span>
+              <span className="vayu-metric-value">0 available</span>
+            </div>
+            <div className="vayu-metric-row">
+              <span className="vayu-metric-label">MAE / RMSE / Bias</span>
+              <span className="vayu-metric-value">Not calculated</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="vayu-panel">
+          <div className="vayu-panel-header">
+            <div>
+              <p className="vayu-panel-kicker">Method</p>
+              <h3 className="vayu-panel-title">Forecast evaluation requirements</h3>
+            </div>
+          </div>
+          <div className="vayu-panel-body">
+            <div className="vayu-risk-gauge">
+              <div className="vayu-risk-number moderate">N/A</div>
+              <div>
+                <div className="vayu-risk-label">Metrics withheld</div>
+                <div className="vayu-risk-sub">MAE, RMSE, and bias require timestamp- and region-aligned forecast and observed measurements.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </>
   );
 }
@@ -1594,307 +2299,3 @@ function AnomaliesTab({ anomalies }: { anomalies: WeatherAnomaly[] }) {
   );
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Tab 6: Citizen & AI Intelligence
-// ─────────────────────────────────────────────────────────────────
-
-function CitizenAITab({
-  citizenReports,
-  events,
-}: {
-  citizenReports: CitizenAnalysisReport[];
-  events: WeatherEvent[];
-}) {
-  const verifiedCount = citizenReports.filter((r) => r.status === "VERIFIED").length;
-  const pendingCount = citizenReports.filter((r) => r.status === "PENDING").length;
-  const suspiciousCount = citizenReports.filter((r) => r.status === "SUSPICIOUS").length;
-
-  return (
-    <>
-      {/* AI Model Status Cards */}
-      <div className="vayu-grid-2" style={{ marginBottom: 0 }}>
-        <div className="vayu-model-panel">
-          <span className="vayu-model-label">NOT TRAINED</span>
-          <div className="vayu-model-header">
-            <div className="vayu-model-icon"><Brain size={20} /></div>
-            <div>
-              <p className="vayu-model-name">VAYU</p>
-              <p className="vayu-model-desc">Weather Intelligence & Analytics Engine — Mock / Demo Mode</p>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "#8a9a9c", marginBottom: 10 }}>
-            Planned capabilities (not yet implemented):
-          </div>
-          <div className="vayu-model-pipeline">
-            {["Anomaly Detection", "Spatial Clustering", "Event Classification", "Severity Prediction", "Forecasting", "Data Fusion"].map((s) => (
-              <span key={s} className="vayu-pipeline-step">{s}</span>
-            ))}
-          </div>
-        </div>
-        <div className="vayu-model-panel">
-          <span className="vayu-model-label">NOT TRAINED</span>
-          <div className="vayu-model-header">
-            <div className="vayu-model-icon"><ShieldCheck size={20} /></div>
-            <div>
-              <p className="vayu-model-name">VISTA</p>
-              <p className="vayu-model-desc">Verification Intelligence for Source Trust Assessment — Mock / Demo Mode</p>
-            </div>
-          </div>
-          <div style={{ fontSize: 11, color: "#8a9a9c", marginBottom: 10 }}>
-            Planned verification pipeline (not yet implemented):
-          </div>
-          <div className="vayu-model-pipeline">
-            {["Text Analysis", "Image Verification", "Location Consistency", "Time Consistency", "Weather Consistency", "Spatial Corroboration", "Source Trust"].map((s) => (
-              <span key={s} className="vayu-pipeline-step">{s}</span>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="vayu-grid-3" style={{ marginTop: 14 }}>
-        <div className="vayu-panel">
-          <div className="vayu-panel-header">
-            <div>
-              <p className="vayu-panel-kicker">Citizen Report Stats</p>
-              <h3 className="vayu-panel-title">Report Breakdown</h3>
-            </div>
-          </div>
-          <div className="vayu-panel-body">
-            <BarList
-              data={[
-                { label: "Verified", value: verifiedCount },
-                { label: "Pending", value: pendingCount },
-                { label: "Suspicious", value: suspiciousCount },
-              ]}
-              colour="green"
-            />
-          </div>
-        </div>
-        <div className="vayu-panel">
-          <div className="vayu-panel-header">
-            <div>
-              <p className="vayu-panel-kicker">VISTA ↔ VAYU Correlation</p>
-              <h3 className="vayu-panel-title">Corroboration Scores</h3>
-            </div>
-          </div>
-          <div className="vayu-panel-body">
-            <div
-              style={{
-                background: "#fde8e8",
-                border: "1px solid #f4b8b0",
-                padding: "10px 12px",
-                fontSize: 11,
-                color: "#c62828",
-                fontFamily: "DM Mono, monospace",
-              }}
-            >
-              NOT TRAINED — Corroboration engine unavailable in demo mode.
-            </div>
-          </div>
-        </div>
-        <div className="vayu-panel">
-          <div className="vayu-panel-header">
-            <div>
-              <p className="vayu-panel-kicker">Event Consolidation</p>
-              <h3 className="vayu-panel-title">Citizen → Event Matches</h3>
-            </div>
-          </div>
-          <div className="vayu-panel-body">
-            <BarList
-              data={events.slice(0, 5).map((e) => ({
-                label: e.city,
-                value: e.verifiedReportCount,
-                suffix: " verified",
-              }))}
-              colour="cyan"
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="vayu-panel">
-        <div className="vayu-panel-header">
-          <div>
-            <p className="vayu-panel-kicker">Citizen Ground Reports</p>
-            <h3 className="vayu-panel-title">Recent Citizen Observations</h3>
-          </div>
-          <span style={{ font: "9px 'DM Mono', monospace", color: "#789196" }}>
-            {citizenReports.length} reports · DEMO
-          </span>
-        </div>
-        {citizenReports.length > 0 ? (
-          citizenReports.map((report) => (
-            <div key={report.reportId} className="vayu-cit-item">
-              <div className="vayu-cit-avatar">
-                {report.userEmail.slice(0, 2).toUpperCase()}
-              </div>
-              <div className="vayu-cit-body">
-                <strong>{report.userEmail}</strong>
-                <p>{report.text}</p>
-                <div className="vayu-cit-meta">
-                  <span className={`vayu-vstatus ${verificationClass(report.status)}`}>{report.status}</span>
-                  <span className="vayu-cit-time">{formatIST(report.timestamp)}</span>
-                  <span style={{ font: "9px 'DM Mono', monospace", color: "#789196" }}>
-                    Conf: {report.confidence}%
-                  </span>
-                  <span className={`vayu-severity ${severityClass("low")}`}>{report.category}</span>
-                  <span style={{ font: "9px 'DM Mono', monospace", color: "#789196" }}>
-                    {report.city}, {report.state}
-                  </span>
-                </div>
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="vayu-empty">No citizen reports match current filters.</div>
-        )}
-      </div>
-    </>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Tab 7: Data Quality
-// ─────────────────────────────────────────────────────────────────
-
-function DataQualityTab({ observations }: { observations: WeatherObservation[] }) {
-  const dataSources = [
-    { name: "IMD API Feed", status: "DEMO", freshness: "Simulated — 0 min ago", quality: "N/A" },
-    { name: "Weather API (Third-party)", status: "DEMO", freshness: "Simulated — 0 min ago", quality: "N/A" },
-    { name: "Citizen Reports Portal", status: "MOCK", freshness: "Local mock data", quality: "N/A" },
-    { name: "Social Media Crawler", status: "MOCK", freshness: "Not connected", quality: "N/A" },
-    { name: "Satellite (INSAT-3DR)", status: "MOCK", freshness: "Not connected", quality: "N/A" },
-    { name: "Doppler Radar Network", status: "MOCK", freshness: "Not connected", quality: "N/A" },
-    { name: "VISTA Model Output", status: "MOCK", freshness: "NOT TRAINED", quality: "N/A" },
-    { name: "VAYU Engine Output", status: "MOCK", freshness: "NOT TRAINED", quality: "N/A" },
-  ];
-
-  const good = observations.filter((o) => o.dataQualityFlag === "Good").length;
-  const suspect = observations.filter((o) => o.dataQualityFlag === "Suspect").length;
-  const estimated = observations.filter((o) => o.dataQualityFlag === "Estimated").length;
-
-  return (
-    <>
-      <div className="vayu-dq-grid">
-        {dataSources.map((src) => (
-          <div key={src.name} className="vayu-dq-card">
-            <div className="src-name">{src.name}</div>
-            <div className={`src-status ${src.status.toLowerCase()}`}>{src.status}</div>
-            <div className="vayu-dq-freshness">{src.freshness}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="vayu-grid-2">
-        <div className="vayu-panel">
-          <div className="vayu-panel-header">
-            <div>
-              <p className="vayu-panel-kicker">Observation Quality Flags</p>
-              <h3 className="vayu-panel-title">Data Quality Distribution</h3>
-            </div>
-          </div>
-          <div className="vayu-panel-body">
-            <BarList
-              data={[
-                { label: "Good", value: good },
-                { label: "Suspect", value: suspect },
-                { label: "Estimated", value: estimated },
-              ]}
-              colour="green"
-            />
-          </div>
-        </div>
-
-        <div className="vayu-panel">
-          <div className="vayu-panel-header">
-            <div>
-              <p className="vayu-panel-kicker">Data Provenance</p>
-              <h3 className="vayu-panel-title">Source Coverage Summary</h3>
-            </div>
-          </div>
-          <div className="vayu-panel-body">
-            <div className="vayu-metric-row">
-              <span className="vayu-metric-label">Total Observations</span>
-              <span className="vayu-metric-value">{observations.length}</span>
-            </div>
-            <div className="vayu-metric-row">
-              <span className="vayu-metric-label">Unique States Covered</span>
-              <span className="vayu-metric-value">
-                {new Set(observations.map((o) => o.state)).size}
-              </span>
-            </div>
-            <div className="vayu-metric-row">
-              <span className="vayu-metric-label">Unique Districts</span>
-              <span className="vayu-metric-value">
-                {new Set(observations.map((o) => o.district)).size}
-              </span>
-            </div>
-            <div className="vayu-metric-row">
-              <span className="vayu-metric-label">Data Mode</span>
-              <span className="vayu-metric-value" style={{ color: "#c78c27", fontSize: 12 }}>DEMO / MOCK</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="vayu-panel">
-        <div className="vayu-panel-header">
-          <div>
-            <p className="vayu-panel-kicker">Observation Log</p>
-            <h3 className="vayu-panel-title">Full Observation Data Table</h3>
-          </div>
-        </div>
-        <div className="vayu-panel-body no-pad">
-          <div className="vayu-table-wrap">
-            <table className="vayu-table">
-              <thead>
-                <tr>
-                  <th>Obs ID</th>
-                  <th>Station</th>
-                  <th>Location</th>
-                  <th>Temp</th>
-                  <th>Humidity</th>
-                  <th>Rainfall 24h</th>
-                  <th>Wind</th>
-                  <th>Visibility</th>
-                  <th>Quality</th>
-                  <th>Source</th>
-                  <th>Time (IST)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {observations.map((obs) => (
-                  <tr key={obs.observationId}>
-                    <td className="mono">{obs.observationId}</td>
-                    <td className="mono dim">{obs.stationId}</td>
-                    <td>{obs.city}, <span className="dim">{obs.state}</span></td>
-                    <td className="mono">{obs.temperatureC}°C</td>
-                    <td className="mono">{obs.humidityPercent}%</td>
-                    <td className="mono">{obs.rainfall24hMm} mm</td>
-                    <td className="mono">{obs.windSpeedKmh} km/h</td>
-                    <td className="mono">{obs.visibilityKm} km</td>
-                    <td>
-                      <span
-                        style={{
-                          font: "9px 'DM Mono', monospace",
-                          padding: "2px 6px",
-                          background: obs.dataQualityFlag === "Good" ? "#e3f3ec" : obs.dataQualityFlag === "Suspect" ? "#fce9e6" : "#fdf1d8",
-                          color: obs.dataQualityFlag === "Good" ? "#2c8c67" : obs.dataQualityFlag === "Suspect" ? "#e26b5d" : "#c78c27",
-                        }}
-                      >
-                        {obs.dataQualityFlag}
-                      </span>
-                    </td>
-                    <td className="dim">{obs.dataSource}</td>
-                    <td className="mono dim">{formatIST(obs.timestamp)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {observations.length === 0 && <div className="vayu-empty">No observations match current filters.</div>}
-        </div>
-      </div>
-    </>
-  );
-}

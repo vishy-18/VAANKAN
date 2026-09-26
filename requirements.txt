@@ -6,3 +6,7 @@ pytest==8.3.5
 streamlit==1.44.1
 pandas==2.2.3
 python-dotenv==1.2.1
+SQLAlchemy==2.0.40
+alembic==1.15.2
+GeoAlchemy2==0.17.1
+psycopg[binary]==3.2.6

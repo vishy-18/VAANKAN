@@ -1,0 +1,1 @@
+"""Source adapters and normalization pipeline for VAANKAN ingestion."""

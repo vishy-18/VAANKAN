@@ -42,9 +42,11 @@ import {
 import "./App.css";
 import "leaflet/dist/leaflet.css";
 import AnalysisPage from "./pages/admin/Analysis/Analysis";
+import { listReports, listSubmissionHistory, submitVerification, type ApiReport } from "./services/reportService";
+import { dispatchNotification } from "./services/notificationService";
 
 type View = "dashboard" | "review" | "alert" | "history" | "analysis";
-type Status = "Verified" | "Review" | "Suspicious";
+type Status = "Verified" | "Review" | "Suspicious" | "Unsupported";
 type Role = "admin" | "citizen";
 type Filters = {
   period: string;
@@ -60,19 +62,63 @@ type Report = {
   source: string;
   time: string;
   status: Status;
-  confidence: number;
+  confidence: number | null;
   reports: number;
   tone: "blue" | "coral" | "amber";
   category: string;
   region: string;
   ageHours: number;
+  timestamp?: string;
   latitude: number;
   longitude: number;
-  intensity: number;
+  intensity: number | null;
   evidence?: EvidenceItem[];
 };
 
 type EvidenceItem = { name: string; type: string; detail: string };
+
+function apiReportToAdminReport(report: ApiReport): Report {
+  const ageHours = Math.max(0, (Date.now() - new Date(report.timestamp).getTime()) / 3_600_000);
+  const status: Status = report.verification_status === "VERIFIED"
+    ? "Verified"
+    : report.verification_status === "SUSPICIOUS"
+      ? "Suspicious"
+      : report.verification_status === "UNSUPPORTED"
+        ? "Unsupported"
+        : "Review";
+  const categoryNames: Record<string, string> = {
+    rainfall: "Rainfall",
+    thunderstorm: "Thunderstorm",
+    flooding: "Flooding",
+    heatwave: "Heatwave",
+    fog: "Fog",
+    dust_storm: "Dust storm",
+    strong_winds: "Strong winds",
+  };
+  return {
+    id: report.record_id,
+    title: report.text,
+    location: `${report.city}, ${report.district}, ${report.state}`,
+    source: report.source_name,
+    time: new Date(report.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
+    status,
+    confidence: null,
+    reports: 1,
+    tone: status === "Verified" ? "blue" : status === "Suspicious" || status === "Unsupported" ? "coral" : "amber",
+    category: categoryNames[report.event_type_claimed] ?? report.event_type_claimed,
+    region: report.state,
+    ageHours,
+    timestamp: report.timestamp,
+    latitude: report.latitude,
+    longitude: report.longitude,
+    intensity: null,
+    evidence: [
+      { name: report.record_id, type: "Citizen ground report", detail: "One submitted report; confidence and meteorological corroboration are not assessed." },
+      ...(report.image_url ? [{ name: report.image_url, type: "Submitted image", detail: "Media link supplied with report; authenticity is not assessed." }] : []),
+      ...(report.video_url ? [{ name: report.video_url, type: "Submitted video", detail: "Media link supplied with report; authenticity is not assessed." }] : []),
+    ],
+  };
+}
 
 const reports: Report[] = [
   {
@@ -328,6 +374,8 @@ function StatusPill({ status }: { status: Status }) {
 
 function AdminApp() {
   const [view, setView] = useState<View>("dashboard");
+  const [adminReports, setAdminReports] = useState<Report[]>(reports);
+  const [reportSource, setReportSource] = useState<"API" | "MOCK">("MOCK");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [role, setRole] = useState<Role>("admin");
   const [darkMode, setDarkMode] = useState(false);
@@ -340,9 +388,26 @@ function AdminApp() {
   const [mobileNav, setMobileNav] = useState(false);
   const [notice, setNotice] = useState("");
   const [selectedAlert, setSelectedAlert] = useState<Report | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void listReports().then((result) => {
+      if (!active) return;
+      if (result.ok) {
+        setAdminReports(result.data.map(apiReportToAdminReport));
+        setReportSource("API");
+      } else {
+        setReportSource("MOCK");
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const visibleReports = useMemo(
     () =>
-      reports.map((report) =>
+      adminReports.map((report) =>
         loadVerifiedAlertIds().includes(report.id)
           ? { ...report, status: "Verified" as Status }
           : report,
@@ -363,7 +428,7 @@ function AdminApp() {
           report.ageHours <= periodHours
         );
       }),
-    [filters],
+    [adminReports, filters],
   );
 
   const showNotice = (message: string) => {
@@ -381,28 +446,21 @@ function AdminApp() {
     setSelectedAlert(verifiedReport);
 
     try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/api/admin/reports/${report.id}/submit-verification`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: "VERIFIED",
-            reason: "Ground weather evidence & consensus verified by admin operator",
-            operator: "A. Sharma",
-          }),
-        },
+      const response = await submitVerification(
+        report.id,
+        "VERIFIED",
+        "Ground weather evidence reviewed by admin operator",
+        "A. Sharma",
       );
       if (response.ok) {
-        const data = (await response.json()) as {
-          submission_id: string;
-          notified_count: number;
-        };
+        const data = response.data;
         showNotice(
-          `Alert ${report.id} verified & committed to DB. Automatically sent email to ${data.notified_count} citizen(s) within 10 km!`,
+          `Alert ${report.id} decision recorded. Email provider status: ${data.email_status}.`,
         );
       } else {
-        showNotice(`${report.id} verified.`);
+        showNotice(`${report.id} updated locally; backend unavailable (${response.error}).`);
+        const notifications = dispatchAlertNotifications(verifiedReport);
+        void sendExternalNotifications(verifiedReport, notifications, showNotice);
       }
     } catch {
       const notifications = dispatchAlertNotifications(verifiedReport);
@@ -436,7 +494,9 @@ function AdminApp() {
           <small>v0.1 / DEMO</small>
         </div>
         <div className="network-status">
-          <span className="pulse" /> Live network <strong>98.4%</strong>
+          <span className={`pulse ${reportSource === "API" ? "" : "demo"}`} />
+          {reportSource === "API" ? "Backend reports" : "Demo reports"}
+          <strong>{reportSource}</strong>
         </div>
         <nav>
           <p className="nav-label">Operations</p>
@@ -862,20 +922,15 @@ async function sendExternalNotifications(
   const results = await Promise.all(
     notifications.map(async (notification) => {
       try {
-        const response = await fetch("http://127.0.0.1:8000/api/notifications/dispatch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        return await dispatchNotification({
             report_id: report.id,
             email: notification.email,
             phone: notification.phone,
             subject: `VAANKAN verified alert: ${report.title}`,
             body: `Verified VAANKAN alert: ${report.title} at ${report.location}. This event is within ${notification.distanceKm} km of your saved location.`,
-          }),
         });
-        return response.ok ? await response.json() as { email: string; sms: string; sent: boolean } : { email: "api_error", sms: "api_error", sent: false };
       } catch {
-        return { email: "api_unavailable", sms: "api_unavailable", sent: false };
+        return { email: "api_unavailable", sms: "api_unavailable", sent: false, errors: ["Notification service failed"] };
       }
     }),
   );
@@ -1597,14 +1652,12 @@ function CitizenHome({
           <h2>{location ? "Your local picture" : "Set your location"}</h2>
           <div className="analysis-score">
             <strong>
-                {localReports.length
-                ? Math.round(
-                  localReports.reduce(
-                      (sum, report) => sum + report.intensity,
-                      0,
-                    ) / visibleReports.length,
-                  )
-                : 0}
+                {(() => {
+                  const values = localReports.flatMap((report) => report.intensity === null ? [] : [report.intensity]);
+                  return values.length
+                    ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)
+                    : "N/A";
+                })()}
             </strong>
             <span>
               / 100
@@ -1626,9 +1679,12 @@ function CitizenHome({
           <div className="analysis-line">
             <span>Average confidence</span>
             <strong>
-              {localReports.length
-                ? `${Math.round(localReports.reduce((sum, report) => sum + report.confidence, 0) / localReports.length)}%`
-                : "0%"}
+              {(() => {
+                const values = localReports.flatMap((report) => report.confidence === null ? [] : [report.confidence]);
+                return values.length
+                  ? `${Math.round(values.reduce((sum, value) => sum + value, 0) / values.length)}%`
+                  : "Not assessed";
+              })()}
             </strong>
           </div>
         </div>
@@ -1714,7 +1770,7 @@ function CitizenSearch({ reports: searchableReports }: { reports: Report[] }) {
               <span className="citizen-card-label">SEARCHED LOCATION</span>
               <h2>{selectedReport.location}</h2>
             </div>
-            <span className="citizen-map-count">{selectedReport.confidence}% confidence</span>
+            <span className="citizen-map-count">{selectedReport.confidence === null ? "Confidence not assessed" : `${selectedReport.confidence}% confidence`}</span>
           </div>
           <IndiaMap reports={[selectedReport]} userLocation={selectedReport} />
         </section>
@@ -1967,29 +2023,31 @@ function IndiaMap({
       attribution: "&copy; OpenStreetMap contributors",
     }).addTo(map);
     mapReports.forEach((report) => {
-      const radius = 18000 + report.intensity * 430;
+      const intensity = report.intensity;
       const color =
         report.status === "Suspicious"
           ? "#e26b5d"
-          : report.status === "Review"
+          : report.status === "Review" || report.status === "Unsupported"
             ? "#c78c27"
             : "#2caeb7";
-      L.circle([report.latitude, report.longitude], {
-        radius,
-        color,
-        fillColor: color,
-        fillOpacity: 0.13,
-        weight: 1,
-      }).addTo(map);
+      if (intensity !== null) {
+        L.circle([report.latitude, report.longitude], {
+          radius: 18000 + intensity * 430,
+          color,
+          fillColor: color,
+          fillOpacity: 0.13,
+          weight: 1,
+        }).addTo(map);
+      }
       L.circleMarker([report.latitude, report.longitude], {
-        radius: 5 + report.intensity / 18,
+        radius: intensity === null ? 7 : 5 + intensity / 18,
         color,
         fillColor: color,
         fillOpacity: 0.9,
         weight: 2,
       })
         .bindPopup(
-          `<strong>${report.title}</strong><br>${report.location}<br>Intensity: ${report.intensity}%`,
+          `<strong>${report.title}</strong><br>${report.location}<br>${intensity === null ? "Intensity not assessed" : `Intensity: ${intensity}%`}`,
         )
         .addTo(map);
     });
@@ -2042,11 +2100,11 @@ function DashboardEnhanced({
   onOpenAlert: (report: Report) => void;
 }) {
   const average = visibleReports.length
-    ? Math.round(
-        visibleReports.reduce((sum, report) => sum + report.confidence, 0) /
-          visibleReports.length,
-      )
-    : 0;
+    ? (() => {
+        const values = visibleReports.flatMap((report) => report.confidence === null ? [] : [report.confidence]);
+        return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+      })()
+    : null;
   return (
     <div className="page-wrap">
       <div className="page-heading">
@@ -2077,8 +2135,8 @@ function DashboardEnhanced({
         <Stat
           icon={ShieldCheck}
           label="Verified confidence"
-          value={`${average}%`}
-          detail="Filtered event average"
+          value={average === null ? "N/A" : `${average}%`}
+          detail={average === null ? "Not assessed" : "Filtered event average"}
         />
         <Stat
           icon={AlertTriangle}
@@ -2296,12 +2354,12 @@ function ReviewQueueEnhanced({
               </div>
               <div className="evidence-cell">
                 <span className="evidence-line">
-                  <i style={{ width: `${report.confidence}%` }} />
+                  <i style={{ width: `${report.confidence ?? 0}%` }} />
                 </span>
                 <small>{report.source}</small>
               </div>
               <strong className={`confidence ${report.tone}`}>
-                {report.confidence}%
+                {report.confidence === null ? "N/A" : `${report.confidence}%`}
               </strong>
               <span className="muted-text">{report.time}</span>
               <div className="row-actions">
@@ -2667,12 +2725,12 @@ function ReviewQueue({ onAction }: { onAction: (message: string) => void }) {
             </div>
             <div className="evidence-cell">
               <span className="evidence-line">
-                <i style={{ width: `${report.confidence}%` }} />
+                <i style={{ width: `${report.confidence ?? 0}%` }} />
               </span>
               <small>{report.source}</small>
             </div>
             <strong className={`confidence ${report.tone}`}>
-              {report.confidence}%
+              {report.confidence === null ? "N/A" : `${report.confidence}%`}
             </strong>
             <span className="muted-text">{report.time}</span>
             <div className="row-actions">
@@ -2824,43 +2882,38 @@ function AlertDetail({
     email_status: string;
   } | null>(null);
 
-  const eventDate = new Date(Date.UTC(2026, 8, 23, 14, 32 - Math.round(report.ageHours * 60)));
+  const eventDate = new Date(report.timestamp ?? Date.UTC(2026, 8, 26, 12) - report.ageHours * 60 * 60 * 1000);
   const documents = report.evidence ?? [
     { name: `${report.id}-citizen-observations.csv`, type: "Ground reports", detail: `${report.reports} submitted observations` },
-    { name: `weather-api-${report.id}.json`, type: "Weather feed", detail: `${report.source} signal payload` },
-    { name: `${report.id}-model-summary.txt`, type: "Model explanation", detail: `${report.confidence}% confidence and anomaly notes` },
+    { name: `source-${report.id}`, type: "Report provenance", detail: report.source },
+    ...(report.confidence === null ? [] : [{ name: `${report.id}-model-summary.txt`, type: "Model explanation", detail: `${report.confidence}% confidence and anomaly notes` }]),
   ];
 
   const handleSubmitVerification = async (event: FormEvent) => {
     event.preventDefault();
     setSubmitting(true);
     try {
-      const response = await fetch(`http://127.0.0.1:8000/api/admin/reports/${report.id}/submit-verification`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          status: selectedStatus.toUpperCase(),
-          reason: reason,
-          operator: "A. Sharma",
-        }),
-      });
+      const status = selectedStatus === "Verified"
+        ? "VERIFIED"
+        : selectedStatus === "Suspicious"
+          ? "SUSPICIOUS"
+          : selectedStatus === "Unsupported"
+            ? "UNSUPPORTED"
+            : "PENDING";
+      const response = await submitVerification(report.id, status, reason, "A. Sharma");
 
       if (response.ok) {
-        const data = await response.json() as {
-          submission_id: string;
-          notified_count: number;
-          email_status: string;
-        };
+        const data = response.data;
         setLastSubmission(data);
         onVerify({ ...report, status: selectedStatus });
 
         if (selectedStatus === "Verified") {
-          onAction(`Committed #${data.submission_id} to DB! Automatically emailed ${data.notified_count} citizen(s) within 10 km radius!`);
+          onAction(`Decision ${data.submission_id} recorded. Email provider status: ${data.email_status}.`);
         } else {
           onAction(`Committed #${data.submission_id} to DB with status ${selectedStatus}.`);
         }
       } else {
-        onAction("Failed to submit verification to backend database.");
+        onAction(`Backend decision was not recorded: ${response.error}.`);
       }
     } catch {
       onAction("Backend offline. Updated local alert status.");
@@ -2892,7 +2945,7 @@ function AlertDetail({
             <div><MapPin size={16} /><span><small>Location</small><strong>{report.location}</strong><em>{report.latitude.toFixed(4)}, {report.longitude.toFixed(4)}</em></span></div>
             <div><CalendarDays size={16} /><span><small>Event date</small><strong>{eventDate.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" })}</strong></span></div>
             <div><Clock3 size={16} /><span><small>Event time</small><strong>{eventDate.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} IST</strong><em>Received {report.time}</em></span></div>
-            <div><Gauge size={16} /><span><small>Model confidence</small><strong>{report.confidence}%</strong><em>Intensity {report.intensity}/100</em></span></div>
+            <div><Gauge size={16} /><span><small>Model confidence</small><strong>{report.confidence === null ? "Not assessed" : `${report.confidence}%`}</strong><em>{report.intensity === null ? "Intensity not assessed" : `Intensity ${report.intensity}/100`}</em></span></div>
           </div>
           <div className="detail-map"><IndiaMap reports={[report]} /></div>
         </div>
@@ -2924,6 +2977,13 @@ function AlertDetail({
                   onClick={() => setSelectedStatus("Suspicious")}
                 >
                   <AlertTriangle size={13} /> Suspicious
+                </button>
+                <button
+                  type="button"
+                  className={`review ${selectedStatus === "Unsupported" ? "selected" : ""}`}
+                  onClick={() => setSelectedStatus("Unsupported")}
+                >
+                  Unsupported
                 </button>
               </div>
             </label>
@@ -2965,8 +3025,8 @@ type SubmissionItem = {
   submission_id: string;
   report_id: string;
   report_title: string;
-  location: string;
-  event_type: string;
+  location?: string;
+  event_type?: string;
   new_status: string;
   previous_status: string;
   reason: string;
@@ -2984,11 +3044,8 @@ function SubmissionHistoryPage() {
   const fetchHistory = async () => {
     setLoading(true);
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/admin/submission-history");
-      if (response.ok) {
-        const data = await response.json() as SubmissionItem[];
-        setSubmissions(data);
-      }
+      const result = await listSubmissionHistory();
+      if (result.ok) setSubmissions(result.data);
     } catch {
       // Fallback
     } finally {
@@ -3002,14 +3059,11 @@ function SubmissionHistoryPage() {
       void (async () => {
         setLoading(true);
         try {
-          const response = await fetch("http://127.0.0.1:8000/api/admin/submission-history");
+          const result = await listSubmissionHistory();
           if (!isMounted) {
             return;
           }
-          if (response.ok) {
-            const data = await response.json() as SubmissionItem[];
-            setSubmissions(data);
-          }
+          if (result.ok) setSubmissions(result.data);
         } catch {
           // Fallback
         } finally {
@@ -3033,7 +3087,7 @@ function SubmissionHistoryPage() {
         item.submission_id.toLowerCase().includes(q) ||
         item.report_id.toLowerCase().includes(q) ||
         item.report_title.toLowerCase().includes(q) ||
-        item.location.toLowerCase().includes(q) ||
+        (item.location ?? "").toLowerCase().includes(q) ||
         item.operator.toLowerCase().includes(q)
       );
     });

@@ -38,6 +38,21 @@ python -m pytest backend -q
 
 The backend currently runs in deterministic in-memory demo mode. It exposes OpenAPI documentation at `http://127.0.0.1:8000/docs`.
 
+The backend defaults to `STORAGE_BACKEND=memory`. To use local PostgreSQL/PostGIS, start it with `docker compose up -d postgis`, set `STORAGE_BACKEND=postgres` and `DATABASE_URL=postgresql+psycopg://vaankan:vaankan@localhost:5432/vaankan` in `.env`, then apply migrations before starting FastAPI. Compose credentials are development-only; never use them in deployment or commit a real database URL.
+
+The source-aware ingestion preview is available at `GET /api/ingestion/sources` and `POST /api/ingestion/demo-preview`. It uses deterministic IMD-shaped and citizen demo fixtures to demonstrate normalization, quality validation, exact-hash deduplication with canonical provenance, and routing: structured meteorological records go to the VAYU path as `TRUSTED_SOURCE`; external reports remain `PENDING` for VISTA review. The IMD, MOSDAC, and Government Open Data entries are marked `NOT_CONFIGURED`; no live provider access or persistent ingestion is claimed.
+
+With PostgreSQL mode configured, apply/check migrations:
+
+```bash
+alembic upgrade head
+alembic current
+```
+
+Integration tests use a separate database on port `5433`. Start it with `docker compose up -d postgis-test`, set `TEST_DATABASE_URL=postgresql+psycopg://vaankan:vaankan@localhost:5433/vaankan_test`, and run `python -m pytest backend -q`. The PostgreSQL integration test refuses database names that do not contain `test`.
+
+After migration, verify the extension with `SELECT PostGIS_Full_Version();`. In PostgreSQL mode, `GET /api/system/health` checks database and PostGIS readiness without exposing credentials; the existing `/health` response fields are unchanged.
+
 Real email/SMS dispatch requires provider configuration. Copy `.env.example` to `.env`, replace the placeholder SMTP/Twilio values, and restart FastAPI. The backend loads `.env` automatically. Without those settings, `/api/notifications/dispatch` returns `not_configured` and no message is sent.
 
 Engine dashboards:
