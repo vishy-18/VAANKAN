@@ -36,6 +36,15 @@ def test_find_users_within_10km_radius() -> None:
     assert "chennai.observer@example.com" not in emails
 
 
+def test_seeded_demo_report_within_10km_of_target_location() -> None:
+    nearby = store.nearby_reports(12.9495, 80.1407, 10.0)
+    nearby_ids = {report.record_id for report in nearby}
+    assert "R10KM-CHN-01" in nearby_ids
+    users_in_range = store.find_users_within_radius(12.9495, 80.1407, radius_km=10.0)
+    emails = {user["email"] for user in users_in_range}
+    assert "velachery.local@vaankan.gov.in" in emails
+
+
 def test_render_weather_alert_html() -> None:
     html = render_weather_alert_html(
         title="Severe Flood Warning",
@@ -80,6 +89,27 @@ def test_api_submit_verification_auto_email(monkeypatch) -> None:
     assert data["operator"] == "A. Sharma (Senior Officer)"
     assert data["notified_count"] >= 2  # Users within 10 km
     assert data["email_status"] == "not_configured"
+
+
+def test_api_alerts_endpoint_sends_email_when_alerts_exist(monkeypatch) -> None:
+    sent: dict[str, str] = {}
+
+    def fake_send_email(recipient: str, subject: str, body: str, html_body=None, template_type: str = "custom", template_data: dict | None = None):
+        sent["recipient"] = recipient
+        sent["subject"] = subject
+        return "sent", None
+
+    monkeypatch.setenv("VAANKAN_SMTP_HOST", "smtp.test.com")
+    monkeypatch.setenv("VAANKAN_SMTP_USERNAME", "test@test.com")
+    monkeypatch.setenv("VAANKAN_SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("VAANKAN_SMTP_FROM", "test@test.com")
+    monkeypatch.setattr("backend.main.send_email_service", fake_send_email)
+
+    response = client.get("/api/citizen/alerts", params={"citizen_id": "usr-demo-001"})
+    assert response.status_code == 200
+    assert response.json()[0]["alert_id"] == "R10234"
+    assert sent["recipient"] == "skyware2025@gmail.com"
+    assert "ALERT" in sent["subject"]
 
 
 def test_api_submission_history_endpoint() -> None:

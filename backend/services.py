@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
+from uuid import UUID
 
 from geoalchemy2 import WKTElement
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .models import EventReport, GroundObservation as GroundObservationModel
-from .models import WeatherEvent as WeatherEventModel
+from .models import Alert, AuditLog, CitizenActivity, EventReport, GroundObservation as GroundObservationModel, Notification
+from .models import WeatherEvent as WeatherEventModel, WeatherObservation as WeatherObservationModel, WeatherStation as WeatherStationModel
 from .repositories import (
     AuditRepository,
     GroundObservationRepository,
@@ -17,9 +18,11 @@ from .repositories import (
     UserRepository,
     VerificationRepository,
     WeatherEventRepository,
+    WeatherObservationRepository,
 )
 from .models import Report as ReportModel
-from .schemas import CommonReport, EventType, GroundObservation, SourceType, VerificationStatus, WeatherEvent
+from .models import User as UserModel
+from .schemas import CommonReport, EventType, GroundObservation, SourceType, VerificationStatus, WeatherEvent, WeatherObservation
 
 
 def report_schema(record: ReportModel) -> CommonReport:
@@ -39,6 +42,14 @@ def report_schema(record: ReportModel) -> CommonReport:
         image_url=(record.provenance or {}).get("image_url"),
         video_url=(record.provenance or {}).get("video_url"),
         verification_status=VerificationStatus(record.verification_status),
+        submitted=record.submitted,
+        submitted_at=record.submitted_at,
+        citizen_id=(record.provenance or {}).get("citizen_id"),
+        description=(record.provenance or {}).get("description"),
+        locality=(record.provenance or {}).get("locality"),
+        pincode=(record.provenance or {}).get("pincode"),
+        citizen_reported_severity=(record.provenance or {}).get("citizen_reported_severity"),
+        is_ongoing=(record.provenance or {}).get("is_ongoing"),
     )
 
 
@@ -86,6 +97,59 @@ def event_schema(record: WeatherEventModel) -> WeatherEvent:
     )
 
 
+def weather_observation_schema(record: WeatherObservationModel, station: WeatherStationModel | None) -> WeatherObservation:
+    provenance = record.provenance or {}
+    return WeatherObservation(
+        observation_id=record.observation_id,
+        source_id="open-meteo",
+        source_type="WEATHER_MODEL",
+        source_name="Open-Meteo",
+        timestamp=record.source_timestamp,
+        ingested_at=record.processed_at,
+        latitude=record.latitude,
+        longitude=record.longitude,
+        city=station.city if station else None,
+        district=station.district if station else None,
+        state=station.state if station else None,
+        temperature_c=record.temperature_c,
+        feels_like_c=record.feels_like_c,
+        humidity_percent=record.humidity_percent,
+        precipitation_mm=provenance.get("precipitation_mm"),
+        rainfall_mm=record.rainfall_mm,
+        rainfall_1h_mm=record.rainfall_1h_mm,
+        rainfall_3h_mm=record.rainfall_3h_mm,
+        rainfall_24h_mm=record.rainfall_24h_mm,
+        wind_speed_kmh=record.wind_speed_kmh,
+        wind_direction_deg=record.wind_direction_deg,
+        wind_gust_kmh=record.wind_gust_kmh,
+        pressure_hpa=record.pressure_hpa,
+        cloud_cover_percent=record.cloud_cover_percent,
+        visibility_km=record.visibility_km,
+        dew_point_c=record.dew_point_c,
+        weather_condition=provenance.get("weather_condition"),
+        historical_rainfall_avg_mm=record.historical_rainfall_avg,
+        historical_rainfall_daily_avg_mm=provenance.get("historical_rainfall_daily_avg_mm"),
+        historical_temperature_avg_c=record.historical_temperature_avg,
+        historical_wind_speed_avg_kmh=provenance.get("historical_wind_speed_avg_kmh"),
+        historical_visibility_avg_km=provenance.get("historical_visibility_avg_km"),
+        rainfall_anomaly_mm=record.rainfall_anomaly,
+        rainfall_anomaly_ratio=provenance.get("rainfall_anomaly_ratio"),
+        temperature_anomaly_c=record.temperature_anomaly,
+        wind_anomaly_kmh=record.wind_anomaly,
+        visibility_anomaly_km=record.visibility_anomaly,
+        weather_anomaly_score=record.weather_anomaly_score,
+        anomaly_components=provenance.get("anomaly_components", {}),
+        data_quality_flag=record.quality_status,
+        freshness_status=provenance.get("freshness_status", "UNKNOWN"),
+        data_mode=provenance.get("data_mode", "UNKNOWN"),
+        source_units=provenance.get("source_units", {}),
+        baseline_start_date=provenance.get("baseline_start_date"),
+        baseline_end_date=provenance.get("baseline_end_date"),
+        baseline_observation_days=provenance.get("baseline_observation_days", 0),
+        baseline_source=provenance.get("baseline_source"),
+    )
+
+
 class PersistenceService:
     """Transactional application service backed by the SQLAlchemy session."""
 
@@ -97,14 +161,23 @@ class PersistenceService:
         self.audit = AuditRepository(session)
         self.ground_observations = GroundObservationRepository(session)
         self.events = WeatherEventRepository(session)
+        self.weather_observations = WeatherObservationRepository(session)
 
     def add_report(self, report: CommonReport) -> CommonReport:
         record = self.reports.add(report)
-        record.provenance = {
-            "source_name": report.source_name,
-            "image_url": report.image_url,
-            "video_url": report.video_url,
-        }
+        if record:
+            record.provenance = {
+                **(record.provenance or {}),
+                "source_name": report.source_name,
+                "image_url": report.image_url,
+                "video_url": report.video_url,
+                "citizen_id": report.citizen_id,
+                "description": report.description,
+                "locality": report.locality,
+                "pincode": report.pincode,
+                "citizen_reported_severity": report.citizen_reported_severity,
+                "is_ongoing": report.is_ongoing,
+            }
         return report_schema(record)
 
     def get_report(self, record_id: str) -> CommonReport | None:
@@ -128,6 +201,264 @@ class PersistenceService:
             offset=offset,
         )
         return [report_schema(record) for record in records]
+
+    def list_review_queue(
+        self,
+        *,
+        status: str | None = None,
+        event_type: str | None = None,
+        state: str | None = None,
+        district: str | None = None,
+        date: str | None = None,
+        vista_status: str | None = None,
+        priority: str | None = None,
+    ) -> list[CommonReport]:
+        records = self.reports.list(
+            verification_status=status.upper() if status else None,
+            event_type=event_type,
+            region=state or district,
+            limit=500,
+        )
+        if date:
+            records = [record for record in records if record.source_timestamp.date().isoformat() == date]
+        if vista_status:
+            records = [record for record in records if str((record.provenance or {}).get("vista_status", "PENDING")).casefold() == vista_status.casefold()]
+        if priority:
+            records = [record for record in records if str((record.provenance or {}).get("priority", "NORMAL")).casefold() == priority.casefold()]
+        return [report_schema(record) for record in records]
+
+    def list_citizen_reports(self, citizen_id: str, *, limit: int = 100, offset: int = 0) -> list[CommonReport]:
+        records = self.reports.list_for_citizen(citizen_id, limit=limit, offset=offset)
+        return [report_schema(record) for record in records]
+
+    def add_activity(
+        self,
+        citizen_id: str,
+        *,
+        activity_type: str,
+        title: str,
+        description: str,
+        related_id: str | None = None,
+        status: str = "ACTIVE",
+    ) -> dict[str, Any]:
+        activity = CitizenActivity(
+            citizen_id=citizen_id,
+            activity_type=activity_type,
+            title=title,
+            description=description,
+            related_id=related_id,
+            status=status,
+        )
+        self.session.add(activity)
+        self.session.flush()
+        return {
+            "id": str(activity.id),
+            "citizen_id": activity.citizen_id,
+            "type": activity.activity_type,
+            "title": activity.title,
+            "description": activity.description,
+            "timestamp": activity.occurred_at.isoformat() if activity.occurred_at else datetime.now(timezone.utc).isoformat(),
+            "related_id": activity.related_id,
+            "status": activity.status,
+        }
+
+    def list_citizen_activities(self, citizen_id: str) -> list[dict[str, Any]]:
+        statement = (
+            select(CitizenActivity)
+            .where(CitizenActivity.citizen_id == citizen_id)
+            .order_by(CitizenActivity.occurred_at.desc())
+            .limit(100)
+        )
+        return [
+            {
+                "id": str(activity.id),
+                "citizen_id": activity.citizen_id,
+                "type": activity.activity_type,
+                "title": activity.title,
+                "description": activity.description,
+                "timestamp": activity.occurred_at.isoformat(),
+                "related_id": activity.related_id,
+                "status": activity.status,
+            }
+            for activity in self.session.scalars(statement)
+        ]
+
+    def acknowledge_alert(self, citizen_id: str, alert_id: str) -> dict[str, object]:
+        existing = self.session.scalars(
+            select(CitizenActivity).where(
+                CitizenActivity.citizen_id == citizen_id,
+                CitizenActivity.activity_type == "ALERT_ACKNOWLEDGED",
+                CitizenActivity.related_id == alert_id,
+            )
+        ).first()
+        if existing:
+            return {"acknowledged": True, "already_acknowledged": True, "acknowledged_at": existing.occurred_at.isoformat()}
+        activity = self.add_activity(
+            citizen_id,
+            activity_type="ALERT_ACKNOWLEDGED",
+            title="Alert acknowledged",
+            description=f"Alert {alert_id} acknowledged from the citizen portal.",
+            related_id=alert_id,
+            status="ACKNOWLEDGED",
+        )
+        return {"acknowledged": True, "already_acknowledged": False, "acknowledged_at": activity["timestamp"]}
+
+    def record_notification(
+        self,
+        *,
+        alert_id: UUID | None = None,
+        user_id: UUID | None = None,
+        recipient: str,
+        channel: str,
+        delivery_status: str,
+        error: str | None = None,
+    ) -> Notification:
+        record = Notification(
+            alert_id=alert_id,
+            user_id=user_id,
+            channel=channel,
+            recipient=recipient,
+            status=delivery_status.upper(),
+            error=error,
+            sent_at=datetime.now(timezone.utc) if delivery_status == "sent" else None,
+        )
+        self.session.add(record)
+        self.session.flush()
+        return record
+
+    def update_notification(self, notification_id: str, delivery_status: str, error: str | None = None) -> None:
+        record = self.session.get(Notification, UUID(notification_id))
+        if record is None:
+            return
+        record.status = delivery_status.upper()
+        record.error = error
+        record.sent_at = datetime.now(timezone.utc) if delivery_status == "sent" else None
+
+    def submit_verified_report(self, report_id: str, *, operator: str, radius_km: float = 10.0) -> dict[str, Any]:
+        record = self.reports.get_by_record_id(report_id, for_update=True)
+        if record is None:
+            raise ValueError("report not found")
+        if record.verification_status != VerificationStatus.verified.value:
+            raise ValueError("Only VERIFIED reports can be submitted")
+        if record.submitted:
+            raise ValueError("report already submitted")
+
+        now = datetime.now(timezone.utc)
+        record.submitted = True
+        record.submitted_at = now
+        observation = self.ground_observations.replace_from_verified_report(record)
+        event_uuid = self.session.scalars(
+            select(EventReport.event_id).where(EventReport.report_id == record.id).limit(1)
+        ).first()
+        alert = Alert(
+            event_id=event_uuid,
+            source_report_id=record.id,
+            title=record.text[:240],
+            body=f"Verified {record.event_type_claimed.replace('_', ' ')} event near {record.city}, {record.state}.",
+            status="ACTIVE",
+            audience_radius_km=radius_km,
+            provenance={"report_id": report_id, "submitted_by": operator, "submitted_at": now.isoformat()},
+        )
+        self.session.add(alert)
+        self.session.flush()
+
+        recipients = self.find_users_within_radius(record.latitude, record.longitude, radius_km)
+        queued_notifications: list[dict[str, Any]] = []
+        for recipient in recipients:
+            user_uuid = UUID(str(recipient["user_id"]))
+            notification = self.record_notification(
+                alert_id=alert.id,
+                user_id=user_uuid,
+                recipient=str(recipient["email"]),
+                channel="email",
+                delivery_status="queued",
+            )
+            self.add_activity(
+                str(user_uuid),
+                activity_type="VERIFIED_ALERT",
+                title="Nearby weather alert",
+                description=f"{record.text} was verified and submitted within your {radius_km:g} km alert radius.",
+                related_id=str(alert.id),
+                status="ACTIVE",
+            )
+            queued_notifications.append({
+                "notification_id": str(notification.id),
+                "user_id": str(user_uuid),
+                "email": str(recipient["email"]),
+                "name": str(recipient.get("name") or "Citizen"),
+                "distance_km": float(recipient["distance_km"]),
+            })
+
+        self.session.add(AuditLog(
+            action="report_submitted_to_vayu",
+            entity_type="report",
+            entity_id=report_id,
+            occurred_at=now,
+            details={
+                "verification_status": record.verification_status,
+                "submitted": True,
+                "submitted_at": now.isoformat(),
+                "alert_id": str(alert.id),
+                "radius_km": radius_km,
+                "recipient_count": len(recipients),
+                "operator": operator,
+            },
+        ))
+        self.session.flush()
+        return {
+            "report_id": report_id,
+            "title": record.text,
+            "event_type": record.event_type_claimed,
+            "city": record.city,
+            "district": record.district,
+            "state": record.state,
+            "status": VerificationStatus.verified.value,
+            "submitted": True,
+            "submitted_at": now.isoformat(),
+            "vayu_status": "SUBMITTED",
+            "verified_ground_observation_id": observation.observation_id,
+            "alert_id": str(alert.id),
+            "recipients": queued_notifications,
+        }
+
+    def list_citizen_alerts(self, citizen_id: str) -> list[dict[str, Any]]:
+        try:
+            user = self.session.get(UserModel, UUID(citizen_id))
+        except ValueError:
+            user = self.users.get_by_email(citizen_id)
+        if user is None:
+            return []
+        statement = (
+            select(Alert, Notification, ReportModel)
+            .join(Notification, Notification.alert_id == Alert.id)
+            .join(ReportModel, Alert.source_report_id == ReportModel.id)
+            .where(Notification.user_id == user.id, Notification.channel == "email")
+            .where(Alert.status == "ACTIVE", ReportModel.submitted.is_(True))
+            .order_by(Alert.created_at.desc())
+        )
+        results = []
+        for alert, notification, report in self.session.execute(statement):
+            acknowledged = self.session.scalars(select(CitizenActivity).where(
+                CitizenActivity.citizen_id.in_([str(user.id), user.email]),
+                CitizenActivity.activity_type == "ALERT_ACKNOWLEDGED",
+                CitizenActivity.related_id == str(alert.id),
+            )).first() is not None
+            results.append({
+                "alert_id": str(alert.id),
+                "report_id": report.record_id,
+                "title": alert.title,
+                "severity": (report.provenance or {}).get("citizen_reported_severity") or report.event_type_claimed.upper(),
+                "location": f"{report.city}, {report.state}",
+                "acknowledged": acknowledged,
+                "source": report.source_name,
+                "timestamp": alert.created_at.isoformat(),
+                "age_hours": max(0.0, (datetime.now(timezone.utc) - alert.created_at).total_seconds() / 3600),
+                "event_type": report.event_type_claimed,
+                "latitude": report.latitude,
+                "longitude": report.longitude,
+                "email_status": notification.status,
+            })
+        return results
 
     def nearby_reports(
         self,
@@ -162,6 +493,10 @@ class PersistenceService:
             return None
         return self._user_dict(record)
 
+    def update_citizen_profile(self, citizen_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        record = self.users.update_citizen_profile(citizen_id, updates)
+        return self._user_dict(record) if record else None
+
     @staticmethod
     def _user_dict(record: Any) -> dict[str, Any]:
         profile = record.citizen_profile
@@ -170,6 +505,7 @@ class PersistenceService:
             "email": record.email,
             "name": record.display_name,
             "phone": profile.phone if profile else "",
+            "government_id": profile.government_id if profile else "",
             "address": profile.address if profile else "",
             "latitude": profile.latitude if profile else None,
             "longitude": profile.longitude if profile else None,
@@ -346,12 +682,16 @@ class PersistenceService:
     def submissions(self) -> list[dict[str, Any]]:
         results = []
         for audit in self.audit.list():
+            if audit.action != "verification_decision" or audit.entity_type != "report":
+                continue
             details = audit.details or {}
             report = self.reports.get_by_record_id(audit.entity_id) if audit.entity_type == "report" else None
             results.append({
                 "submission_id": f"SUB-{str(audit.id)[:8].upper()}",
                 "report_id": audit.entity_id,
-                "report_title": report.text if report else "",
+                "report_title": details.get("report_title") or (report.text if report else ""),
+                "location": details.get("location") or (f"{report.city}, {report.district}, {report.state}" if report else ""),
+                "event_type": details.get("event_type") or (report.event_type_claimed if report else ""),
                 "previous_status": details.get("previous_status"),
                 "new_status": details.get("new_status"),
                 "reason": details.get("reason"),
@@ -385,3 +725,16 @@ class PersistenceService:
 
     def audit_logs(self) -> list[dict[str, Any]]:
         return self.submissions()
+
+    def upsert_weather_observations(self, observations: list[dict[str, Any]]) -> int:
+        return self.weather_observations.upsert_many(observations)
+
+    def list_weather_observations(
+        self,
+        *,
+        state: str | None = None,
+        city: str | None = None,
+        limit: int = 500,
+    ) -> list[WeatherObservation]:
+        records = self.weather_observations.list(state=state, city=city, limit=limit)
+        return [weather_observation_schema(record, station) for record, station in records]

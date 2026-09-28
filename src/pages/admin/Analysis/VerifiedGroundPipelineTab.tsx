@@ -40,10 +40,10 @@ export default function VerifiedGroundPipelineTab() {
         <div>
           <p className="vayu-panel-kicker">Admin-verified observation handoff</p>
           <h2>VISTA → VAYU correlation</h2>
-          <p>Explicit admin verification gates reports into the VAYU ground-observation feed in this demo.</p>
+          <p>Admin-verified reports are stored as ground observations for VAYU analysis.</p>
         </div>
         <div className="vayu-pipeline-actions">
-          <span className={`vayu-pipeline-mode ${data?.mode === "FASTAPI DEMO" ? "connected" : "fallback"}`}>
+          <span className={`vayu-pipeline-mode ${data?.mode === "DATABASE" ? "connected" : "fallback"}`}>
             {data?.mode ?? "LOADING"}
           </span>
           <button

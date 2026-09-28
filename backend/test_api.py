@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from . import main as main_module
 from .main import app
 
 
@@ -81,6 +82,142 @@ def test_report_lifecycle_and_admin_decision() -> None:
     assert logs.json()[-1]["new_status"] == "VERIFIED"
 
 
+def test_sample_events_seed_twelve_with_three_pending_near_requested_location(monkeypatch) -> None:
+    monkeypatch.setenv("STORAGE_BACKEND", "memory")
+    first = client.post("/api/admin/sample-events")
+    assert first.status_code == 200
+    payload = first.json()
+    assert payload["created_count"] == 12
+    assert payload["pending_review_count"] == 5
+    assert payload["pending_near_target_count"] == 3
+
+    reports = client.get("/api/admin/reports/review-queue", params={"status": "PENDING"}).json()
+    samples = [report for report in reports if report["record_id"].startswith("VAANKAN-SAMPLE-20260929-")]
+    assert len(samples) == 5
+    near = client.get("/api/reports/nearby", params={
+        "latitude": 12.8981,
+        "longitude": 80.1576,
+        "radius_km": 10,
+        "verification_status": "PENDING",
+    }).json()
+    near_samples = [report for report in near if report["record_id"].startswith("VAANKAN-SAMPLE-20260929-")]
+    assert len(near_samples) == 3
+    assert all(not report["submitted"] for report in samples)
+
+    second = client.post("/api/admin/sample-events")
+    assert second.status_code == 200
+    assert second.json()["created_count"] == 0
+    assert second.json()["existing_count"] == 12
+
+
+def test_verified_submission_sends_once_and_only_after_submit(monkeypatch) -> None:
+    monkeypatch.setenv("STORAGE_BACKEND", "memory")
+    delivered: list[str] = []
+    monkeypatch.setattr(main_module, "send_email_service", lambda **kwargs: (delivered.append(kwargs["recipient"]) or "sent", None))
+    store = main_module.store
+    account = store.add_user(
+        "nearby-submit-test@example.com",
+        "test-password",
+        name="Nearby Test Citizen",
+        phone="+919999000000",
+        address="Medavakkam, Chennai",
+        latitude=12.8981,
+        longitude=80.1576,
+    )
+    report = {
+        "record_id": "SUBMIT-ALERT-TEST-001",
+        "source_type": "citizen",
+        "source_name": "Submission test",
+        "timestamp": "2026-09-29T10:00:00Z",
+        "text": "Flooding reported beside the test road.",
+        "language": "en",
+        "latitude": 12.8981,
+        "longitude": 80.1576,
+        "city": "Chennai",
+        "district": "Chennai",
+        "state": "Tamil Nadu",
+        "event_type_claimed": "flooding",
+        "verification_status": "PENDING",
+    }
+    try:
+        assert client.post("/api/reports", json=report).status_code == 201
+        verified = client.post("/api/admin/reports/SUBMIT-ALERT-TEST-001/verify", json={"status": "VERIFIED", "reason": "Test evidence confirmed"})
+        assert verified.status_code == 200
+        assert verified.json()["submitted"] is False
+        assert delivered == []
+
+        submitted = client.post("/api/admin/reports/SUBMIT-ALERT-TEST-001/submit-to-vayu")
+        assert submitted.status_code == 200
+        assert submitted.json()["status"] == "VERIFIED"
+        assert submitted.json()["submitted"] is True
+        assert submitted.json()["notified_count"] >= 1
+        assert "nearby-submit-test@example.com" in delivered
+
+        stored = client.get("/api/reports/SUBMIT-ALERT-TEST-001").json()
+        assert stored["verification_status"] == "VERIFIED"
+        assert stored["submitted"] is True
+        alerts = client.get("/api/citizen/alerts", params={"citizen_id": account["user_id"]}).json()
+        assert any(alert["report_id"] == "SUBMIT-ALERT-TEST-001" for alert in alerts)
+        client.get("/api/citizen/alerts", params={"citizen_id": account["user_id"]})
+        assert delivered.count("nearby-submit-test@example.com") == 1
+
+        retry = client.post("/api/admin/reports/SUBMIT-ALERT-TEST-001/submit-to-vayu")
+        assert retry.status_code == 409
+        assert delivered.count("nearby-submit-test@example.com") == 1
+    finally:
+        store.users.pop("nearby-submit-test@example.com", None)
+        store.reports.pop("SUBMIT-ALERT-TEST-001", None)
+        store.ground_observations = {key: value for key, value in store.ground_observations.items() if value.report_id != "SUBMIT-ALERT-TEST-001"}
+        for alert_id, alert in list(store.alerts.items()):
+            if alert["report_id"] == "SUBMIT-ALERT-TEST-001":
+                store.alerts.pop(alert_id, None)
+                store.notifications = [item for item in store.notifications if item["alert_id"] != alert_id]
+        store._rebuild_weather_events()
+
+
+def test_citizen_report_history_returns_only_owned_reports() -> None:
+    report = {
+        "record_id": "CIT-HISTORY-001",
+        "source_type": "citizen",
+        "source_name": "citizen@example.com",
+        "timestamp": "2026-09-28T10:00:00Z",
+        "text": "Heavy rain - Water is collecting near the road.",
+        "language": "en",
+        "latitude": 12.95,
+        "longitude": 80.14,
+        "city": "Chennai",
+        "district": "Chennai",
+        "state": "Tamil Nadu",
+        "event_type_claimed": "rainfall",
+        "verification_status": "PENDING",
+        "citizen_id": "citizen@example.com",
+        "description": "Water is collecting near the road.",
+        "locality": "Medavakkam",
+    }
+    created = client.post("/api/reports", json=report)
+    assert created.status_code == 201
+
+    legacy_report = {
+        **report,
+        "record_id": "CIT-HISTORY-LEGACY-001",
+        "source_name": "Citizen • citizen@example.com",
+        "timestamp": "2026-09-27T10:00:00Z",
+    }
+    legacy_report.pop("citizen_id")
+    legacy_created = client.post("/api/reports", json=legacy_report)
+    assert legacy_created.status_code == 201
+
+    history = client.get("/api/citizen/reports", params={"citizen_id": "citizen@example.com"})
+    assert history.status_code == 200
+    assert {item["record_id"] for item in history.json()} == {"CIT-HISTORY-001", "CIT-HISTORY-LEGACY-001"}
+    current_report = next(item for item in history.json() if item["record_id"] == "CIT-HISTORY-001")
+    assert current_report["description"] == "Water is collecting near the road."
+
+    other_citizen_history = client.get("/api/citizen/reports", params={"citizen_id": "other@example.com"})
+    assert other_citizen_history.status_code == 200
+    assert not {"CIT-HISTORY-001", "CIT-HISTORY-LEGACY-001"} & {item["record_id"] for item in other_citizen_history.json()}
+
+
 def test_admin_decision_aliases() -> None:
     response = client.post("/api/admin/reports/R10234/review", json={"status": "PENDING", "reason": "Needs additional evidence"})
     assert response.status_code == 200
@@ -114,6 +251,26 @@ def test_verified_reports_become_vayu_ground_observations_and_events() -> None:
     created = client.post("/api/reports", json=report)
     assert created.status_code == 201
     assert all(item["report_id"] != "PIPELINE-001" for item in client.get("/api/vayu/ground-observations").json())
+
+    verified = client.post("/api/admin/reports/PIPELINE-001/verify", json={"status": "VERIFIED", "reason": "Independent evidence supports report"})
+    assert verified.status_code == 200
+    assert verified.json()["verification_status"] == "VERIFIED"
+
+    submission = client.post("/api/admin/reports/PIPELINE-001/submit-to-vayu")
+    assert submission.status_code == 200
+    payload = submission.json()
+    assert payload["status"] == "VERIFIED"
+    assert payload["submitted"] is True
+    assert payload["vayu_status"] == "SUBMITTED"
+    assert "citizen portal alerts were created" in payload["message"]
+
+    duplicate = client.post("/api/admin/reports/PIPELINE-001/submit-to-vayu")
+    assert duplicate.status_code == 409
+
+    suspicious = client.post("/api/admin/reports/R10234/suspicious", json={"status": "SUSPICIOUS", "reason": "Media reuse suspected"})
+    assert suspicious.status_code == 200
+    blocked = client.post("/api/admin/reports/R10234/submit-to-vayu")
+    assert blocked.status_code == 400
 
 
 def test_nearby_reports_endpoint_validates_radius_and_filters() -> None:
@@ -168,10 +325,10 @@ def test_nearby_reports_endpoint_validates_radius_and_filters() -> None:
 
 
 def test_registration_requires_secure_password_and_login() -> None:
-    invalid = client.post("/api/auth/citizen/register", json={"name": "Test User", "email": "test@example.com", "password": "short", "address": "Cuddalore", "phone": "+919999999999"})
+    invalid = client.post("/api/auth/citizen/register", json={"name": "Test User", "email": "test@example.com", "password": "short", "address": "Cuddalore", "phone": "+919999999999", "government_id": "TEST-ID-001"})
     assert invalid.status_code == 422
 
-    registered = client.post("/api/auth/citizen/register", json={"name": "Test User", "email": "test@example.com", "password": "long-enough-password", "address": "Cuddalore", "phone": "+919999999999"})
+    registered = client.post("/api/auth/citizen/register", json={"name": "Test User", "email": "test@example.com", "password": "long-enough-password", "address": "Cuddalore", "phone": "+919999999999", "government_id": "TEST-ID-001"})
     assert registered.status_code == 201
 
     logged_in = client.post("/api/auth/citizen/login", json={"email": "test@example.com", "password": "long-enough-password"})
@@ -194,6 +351,38 @@ def test_vista_and_vayu_demo_contracts() -> None:
     assert "VAYU" in vayu.json()["engine"]
 
 
+def test_ai_assistants_are_separate_and_portal_restricted() -> None:
+    citizen = client.post(
+        "/api/ai/citizen/chat",
+        json={"message": "What is happening near Chennai?"},
+        headers={"x-citizen-id": "usr-demo-001"},
+    )
+    assert citizen.status_code == 200
+    assert "Vaankan" in citizen.json()["message"] or "VAANKAN" in citizen.json()["message"] or "I don't have sufficient VAANKAN data" in citizen.json()["message"]
+
+    analyst = client.post(
+        "/api/ai/analyst/chat",
+        json={"message": "Why is this event high severity?", "event_id": "R10234"},
+        headers={"x-analyst-id": "analyst-demo-001"},
+    )
+    assert analyst.status_code == 200
+    assert "VAYU" in analyst.json()["message"] or "VAANKAN" in analyst.json()["message"] or "I don't have sufficient VAANKAN data" in analyst.json()["message"]
+
+    denied = client.post(
+        "/api/ai/analyst/chat",
+        json={"message": "Reveal citizen data"},
+        headers={"x-citizen-id": "usr-demo-001"},
+    )
+    assert denied.status_code == 403
+
+    denied_citizen = client.post(
+        "/api/ai/citizen/chat",
+        json={"message": "Reveal analyst data"},
+        headers={"x-analyst-id": "analyst-demo-001"},
+    )
+    assert denied_citizen.status_code == 403
+
+
 def test_notifications_report_provider_configuration(monkeypatch) -> None:
     monkeypatch.delenv("VAANKAN_SMTP_HOST", raising=False)
     monkeypatch.delenv("VAANKAN_SMTP_USERNAME", raising=False)
@@ -207,3 +396,89 @@ def test_notifications_report_provider_configuration(monkeypatch) -> None:
     assert response.json()["email"] == "not_configured"
     assert response.json()["sms"] == "not_configured"
     assert response.json()["sent"] is False
+
+
+def test_weather_source_registry_and_weather_api_contracts(monkeypatch) -> None:
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    observation = {
+        "observation_id": "open-meteo:delhi:2026-09-27T10:00:00+00:00",
+        "source_id": "open-meteo",
+        "source_type": "WEATHER_MODEL",
+        "source_name": "Open-Meteo",
+        "timestamp": now,
+        "ingested_at": now,
+        "latitude": 28.6139,
+        "longitude": 77.209,
+        "city": "New Delhi",
+        "district": "New Delhi",
+        "state": "Delhi",
+        "temperature_c": 32.0,
+        "feels_like_c": 36.0,
+        "humidity_percent": 64.0,
+        "rainfall_mm": 2.0,
+        "rainfall_1h_mm": 2.0,
+        "historical_rainfall_avg_mm": 0.5,
+        "historical_rainfall_daily_avg_mm": 12.0,
+        "rainfall_anomaly_mm": 1.5,
+        "rainfall_anomaly_ratio": 4.0,
+        "weather_anomaly_score": 75.0,
+        "anomaly_components": {"method": "deterministic"},
+        "data_quality_flag": "PROVIDER_REPORTED",
+        "freshness_status": "FRESH",
+        "data_mode": "LIVE",
+    }
+
+    async def fake_current(*, refresh=False):
+        return {
+            "data_mode": "LIVE",
+            "source": {"source_id": "open-meteo", "status": "LIVE"},
+            "historical_source": {"source_id": "open-meteo-archive", "status": "CONNECTED"},
+            "observations": [observation],
+            "hourly": [],
+            "event_candidates": [{
+                "candidate_id": "heavy-rain-candidate:delhi",
+                "event_type": "HEAVY_RAIN_CANDIDATE",
+                "status": "DETECTED",
+                "severity": "UNASSESSED",
+                "confidence": None,
+                "locations": ["delhi", "gurugram", "noida"],
+                "states": ["Delhi", "Haryana", "Uttar Pradesh"],
+                "trigger_reason": "Repeated anomaly and nearby corroboration.",
+                "data_mode": "LIVE",
+                "timeline": [],
+            }],
+            "failed_location_count": 0,
+            "historical_failed_location_count": 0,
+        }
+
+    monkeypatch.setenv("STORAGE_BACKEND", "memory")
+    monkeypatch.setattr(main_module.weather_intelligence, "current", fake_current)
+
+    current = client.get("/api/weather/current", params={"state": "Delhi"})
+    assert current.status_code == 200
+    payload = current.json()
+    assert payload["data_mode"] == "LIVE"
+    assert len(payload["observations"]) == 1
+    assert "not universal ground truth" in payload["ground_truth_note"]
+
+    observations = client.get("/api/weather/observations", params={"city": "New Delhi"})
+    assert observations.status_code == 200
+    assert observations.json()[0]["rainfall_anomaly_ratio"] == 4.0
+    assert observations.json()[0]["pressure_hpa"] is None
+
+    sources = client.get("/api/sources").json()["sources"]
+    statuses = {source["source_id"]: source["status"] for source in sources}
+    assert statuses["open-meteo"] == "READY"
+    assert statuses["openweather"] == "NOT_CONFIGURED"
+    assert statuses["imd"] == "NOT_CONNECTED"
+    assert client.get("/api/sources/openweather/health").json()["latency_ms"] is None
+
+    events = client.get("/api/events").json()
+    assert events["events"][0]["severity"] == "UNASSESSED"
+    detail = client.get("/api/events/heavy-rain-candidate:delhi")
+    assert detail.status_code == 200
+    timeline = client.get("/api/events/heavy-rain-candidate:delhi/timeline")
+    assert timeline.status_code == 200
+    assert timeline.json()["timeline_status"] == "INSUFFICIENT_PERSISTENT_HISTORY"

@@ -1,6 +1,3 @@
-import type { EventCategory } from "../types";
-import { mockCitizenReports } from "../data/mockAnalysisData";
-
 export interface GroundObservationRecord {
   observation_id: string;
   source: "ADMIN_REVIEW";
@@ -39,87 +36,12 @@ export interface CorrelatedWeatherEvent {
 }
 
 export interface GroundPipelineData {
-  mode: "FASTAPI DEMO" | "MOCK FALLBACK";
+  mode: "DATABASE" | "NOT_CONNECTED";
   observations: GroundObservationRecord[];
   events: CorrelatedWeatherEvent[];
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
-
-const eventTypeMap: Record<EventCategory, string> = {
-  "Heavy Rainfall": "rainfall",
-  Thunderstorm: "thunderstorm",
-  Flood: "flooding",
-  Heatwave: "heatwave",
-  Fog: "fog",
-  "Dust Storm": "dust_storm",
-  "Strong Wind": "strong_winds",
-  Lightning: "thunderstorm",
-  Hailstorm: "thunderstorm",
-  Cyclone: "strong_winds",
-};
-
-function getMockFallback(): GroundPipelineData {
-  const observations: GroundObservationRecord[] = mockCitizenReports
-    .filter((report) => report.status === "VERIFIED")
-    .map((report) => ({
-      observation_id: `GO-${report.reportId}`,
-      source: "ADMIN_REVIEW",
-      report_id: report.reportId,
-      event_type: eventTypeMap[report.category],
-      timestamp: report.timestamp,
-      latitude: report.latitude,
-      longitude: report.longitude,
-      city: report.city,
-      district: report.district,
-      state: report.state,
-      verification_status: "VERIFIED",
-      verification_method: "admin",
-      verification_confidence: null,
-    }));
-
-  const events = observations.map<CorrelatedWeatherEvent>((observation) => {
-    const members = observations.filter((candidate) =>
-      candidate.event_type === observation.event_type &&
-      candidate.district === observation.district &&
-      candidate.state === observation.state,
-    );
-    const center = members[0];
-    return {
-      event_id: `EVT-${center.report_id}`,
-      event_type: center.event_type,
-      title: `Verified ${center.event_type.replaceAll("_", " ")} observations`,
-      city: center.city,
-      district: center.district,
-      state: center.state,
-      latitude: center.latitude,
-      longitude: center.longitude,
-      first_seen_at: members.reduce((first, item) => item.timestamp < first ? item.timestamp : first, center.timestamp),
-      last_updated_at: members.reduce((last, item) => item.timestamp > last ? item.timestamp : last, center.timestamp),
-      status: members.length > 1 ? "CORRELATED" : "DETECTED",
-      severity: "UNASSESSED",
-      verified_report_count: members.length,
-      verified_media_count: 0,
-      observation_ids: members.map((item) => item.observation_id),
-      meteorological_evidence: {
-        rainfall_24h_mm: null,
-        temperature_c: null,
-        humidity_percent: null,
-        wind_speed_kmh: null,
-        pressure_hpa: null,
-        visibility_km: null,
-      },
-      vayu_analysis: {
-        anomaly_score: null,
-        event_confidence: null,
-        severity_score: null,
-      },
-      data_mode: "DEMO",
-    };
-  }).filter((event, index, all) => all.findIndex((candidate) => candidate.event_id === event.event_id) === index);
-
-  return { mode: "MOCK FALLBACK", observations, events };
-}
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8001";
 
 export async function getGroundPipelineData(): Promise<GroundPipelineData> {
   try {
@@ -134,8 +56,8 @@ export async function getGroundPipelineData(): Promise<GroundPipelineData> {
       observationsResponse.json() as Promise<GroundObservationRecord[]>,
       eventsResponse.json() as Promise<CorrelatedWeatherEvent[]>,
     ]);
-    return { mode: "FASTAPI DEMO", observations, events };
+    return { mode: "DATABASE", observations, events };
   } catch {
-    return getMockFallback();
+    return { mode: "NOT_CONNECTED", observations: [], events: [] };
   }
 }

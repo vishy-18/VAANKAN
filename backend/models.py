@@ -75,6 +75,7 @@ class CitizenProfile(TimestampMixin, Base):
 
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     phone: Mapped[str | None] = mapped_column(String(32))
+    government_id: Mapped[str | None] = mapped_column(String(80), unique=True)
     address: Mapped[str | None] = mapped_column(Text)
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
@@ -109,6 +110,8 @@ class Report(TimestampMixin, Base):
     state: Mapped[str] = mapped_column(String(120), index=True)
     event_type_claimed: Mapped[str] = mapped_column(String(48), index=True)
     verification_status: Mapped[str] = mapped_column(String(32), default="PENDING", index=True)
+    submitted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     provenance: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
 
@@ -314,6 +317,7 @@ class Alert(TimestampMixin, Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     event_id: Mapped[UUID | None] = mapped_column(ForeignKey("weather_events.id"), index=True)
+    source_report_id: Mapped[UUID | None] = mapped_column(ForeignKey("reports.id", ondelete="CASCADE"), unique=True, index=True)
     title: Mapped[str] = mapped_column(String(240))
     body: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT", index=True)
@@ -392,3 +396,16 @@ class AuditLog(TimestampMixin, Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     request_id: Mapped[str | None] = mapped_column(String(128), index=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict)
+
+
+class CitizenActivity(Base):
+    __tablename__ = "citizen_activities"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    citizen_id: Mapped[str] = mapped_column(String(320), index=True)
+    activity_type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(240))
+    description: Mapped[str] = mapped_column(Text)
+    related_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="ACTIVE", index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

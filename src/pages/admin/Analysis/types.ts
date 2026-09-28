@@ -1,5 +1,5 @@
 export type SeverityLevel = "Low" | "Moderate" | "High" | "Critical";
-export type VerificationStatus = "VERIFIED" | "PENDING" | "SUSPICIOUS" | "UNSUPPORTED";
+export type VerificationStatus = "VERIFIED" | "PENDING" | "SUSPICIOUS" | "UNSUPPORTED" | "VERIFIED_AND_SUBMITTED_TO_VAYU";
 export type EventCategory =
   | "Heavy Rainfall"
   | "Thunderstorm"
@@ -10,7 +10,8 @@ export type EventCategory =
   | "Strong Wind"
   | "Lightning"
   | "Hailstorm"
-  | "Cyclone";
+  | "Cyclone"
+  | "Other";
 
 export type DataSourceType =
   | "Weather API"
@@ -124,6 +125,7 @@ export interface CitizenAnalysisReport {
   reportId: string;
   timestamp: string;
   userEmail: string;
+  source?: string;
   city: string;
   district: string;
   state: string;
@@ -132,7 +134,7 @@ export interface CitizenAnalysisReport {
   category: EventCategory;
   text: string;
   status: VerificationStatus;
-  confidence: number;
+  confidence: number | null;
 }
 
 export interface WeatherAnomaly {

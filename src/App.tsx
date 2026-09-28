@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import L from "leaflet";
 import {
-  Activity,
   AlertTriangle,
   ArrowUpRight,
   Check,
@@ -29,23 +28,26 @@ import {
   MessageSquare,
   Menu,
   MoreHorizontal,
-  Radio,
   RefreshCw,
   Search,
   ShieldCheck,
   SlidersHorizontal,
   Moon,
   Sun,
+  TableProperties,
   UserRound,
   UsersRound,
 } from "lucide-react";
 import "./App.css";
+import "./ai-chat.css";
 import "leaflet/dist/leaflet.css";
-import AnalysisPage from "./pages/admin/Analysis/Analysis";
-import { listReports, listSubmissionHistory, submitVerification, type ApiReport } from "./services/reportService";
-import { dispatchNotification } from "./services/notificationService";
+import AnalystPortal from "./pages/analyst/AnalystPortal";
+import DataSourceIntelligence from "./pages/admin/DataSourceIntelligence";
+import DatabaseRecordsDashboard from "./pages/admin/DatabaseRecordsDashboard";
+import { sendCitizenAssistantMessage } from "./services/aiService";
+import { acknowledgeCitizenAlert, createReport, listCitizenActivities, listCitizenAlerts, listCitizenReports, listReports, listSubmissionHistory, loginCitizen, registerCitizen, seedSampleEvents, submitToVayu, submitVerification, updateCitizenProfile, type ApiCitizenAlert, type ApiReport, type CitizenActivity, type CitizenAccount } from "./services/reportService";
 
-type View = "dashboard" | "review" | "alert" | "history" | "analysis";
+type View = "dashboard" | "review" | "alert" | "history" | "sources" | "database";
 type Status = "Verified" | "Review" | "Suspicious" | "Unsupported";
 type Role = "admin" | "citizen";
 type Filters = {
@@ -73,13 +75,14 @@ type Report = {
   longitude: number;
   intensity: number | null;
   evidence?: EvidenceItem[];
+  submitted?: boolean;
 };
 
 type EvidenceItem = { name: string; type: string; detail: string };
 
 function apiReportToAdminReport(report: ApiReport): Report {
   const ageHours = Math.max(0, (Date.now() - new Date(report.timestamp).getTime()) / 3_600_000);
-  const status: Status = report.verification_status === "VERIFIED"
+  const status: Status = report.verification_status === "VERIFIED" || report.verification_status === "VERIFIED_AND_SUBMITTED_TO_VAYU"
     ? "Verified"
     : report.verification_status === "SUSPICIOUS"
       ? "Suspicious"
@@ -102,6 +105,7 @@ function apiReportToAdminReport(report: ApiReport): Report {
     source: report.source_name,
     time: new Date(report.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
     status,
+    submitted: report.submitted ?? report.verification_status === "VERIFIED_AND_SUBMITTED_TO_VAYU",
     confidence: null,
     reports: 1,
     tone: status === "Verified" ? "blue" : status === "Suspicious" || status === "Unsupported" ? "coral" : "amber",
@@ -120,236 +124,6 @@ function apiReportToAdminReport(report: ApiReport): Report {
   };
 }
 
-const reports: Report[] = [
-  {
-    id: "WV-2026-0150",
-    title: "Heavy rainfall",
-    location: "Medavakkam, Chennai",
-    source: "Citizen + Weather API",
-    time: "8 min ago",
-    status: "Review",
-    confidence: 88,
-    reports: 7,
-    tone: "amber",
-    category: "Rainfall",
-    region: "Tamil Nadu",
-    ageHours: 0.13,
-    latitude: 12.9552,
-    longitude: 80.1451,
-    intensity: 82,
-    evidence: [
-      { name: "WV-2026-0150-citizen-reports.csv", type: "Ground reports", detail: "7 reports from the Medavakkam area" },
-      { name: "weather-api-medavakkam.json", type: "Weather feed", detail: "Rainfall rate and cloud cover observations" },
-      { name: "WV-2026-0150-photo-set.webp", type: "Citizen media", detail: "3 uploaded images pending visual review" },
-      { name: "WV-2026-0150-model-explanation.txt", type: "Model explanation", detail: "88% evidence confidence; location corroboration 91%" },
-    ],
-  },
-  {
-    id: "WV-2026-0147",
-    title: "Flash flooding",
-    location: "Cuddalore, Tamil Nadu",
-    source: "Citizen + IMD",
-    time: "12 min ago",
-    status: "Verified",
-    confidence: 94,
-    reports: 18,
-    tone: "blue",
-    category: "Flooding",
-    region: "Tamil Nadu",
-    ageHours: 0.2,
-    latitude: 11.75,
-    longitude: 79.77,
-    intensity: 94,
-  },
-  {
-    id: "WV-2026-0146",
-    title: "Heavy rainfall",
-    location: "Chennai, Tamil Nadu",
-    source: "Weather API",
-    time: "24 min ago",
-    status: "Verified",
-    confidence: 91,
-    reports: 11,
-    tone: "blue",
-    category: "Rainfall",
-    region: "Tamil Nadu",
-    ageHours: 0.4,
-    latitude: 13.08,
-    longitude: 80.27,
-    intensity: 78,
-  },
-  {
-    id: "WV-2026-0145",
-    title: "Strong winds",
-    location: "Puducherry",
-    source: "Social media",
-    time: "38 min ago",
-    status: "Review",
-    confidence: 67,
-    reports: 6,
-    tone: "amber",
-    category: "Strong winds",
-    region: "Puducherry",
-    ageHours: 0.7,
-    latitude: 11.91,
-    longitude: 79.81,
-    intensity: 67,
-  },
-  {
-    id: "WV-2026-0144",
-    title: "Dust storm",
-    location: "Jodhpur, Rajasthan",
-    source: "Citizen portal",
-    time: "52 min ago",
-    status: "Suspicious",
-    confidence: 31,
-    reports: 3,
-    tone: "coral",
-    category: "Dust storm",
-    region: "Rajasthan",
-    ageHours: 0.9,
-    latitude: 26.24,
-    longitude: 73.02,
-    intensity: 31,
-  },
-  {
-    id: "WV-2026-0143",
-    title: "Thunderstorm",
-    location: "Kolkata, West Bengal",
-    source: "Weather API",
-    time: "1 hr ago",
-    status: "Verified",
-    confidence: 84,
-    reports: 14,
-    tone: "blue",
-    category: "Thunderstorm",
-    region: "West Bengal",
-    ageHours: 1,
-    latitude: 22.57,
-    longitude: 88.36,
-    intensity: 84,
-  },
-  {
-    id: "WV-2026-0142",
-    title: "Flash flooding",
-    location: "Kozhikode, Kerala",
-    source: "Citizen + social",
-    time: "2 hrs ago",
-    status: "Review",
-    confidence: 72,
-    reports: 9,
-    tone: "amber",
-    category: "Flooding",
-    region: "Kerala",
-    ageHours: 2,
-    latitude: 11.26,
-    longitude: 75.78,
-    intensity: 72,
-  },
-  {
-    id: "WV-2026-0141",
-    title: "Heatwave",
-    location: "Nagpur, Maharashtra",
-    source: "Weather API",
-    time: "4 hrs ago",
-    status: "Verified",
-    confidence: 89,
-    reports: 8,
-    tone: "blue",
-    category: "Heatwave",
-    region: "Maharashtra",
-    ageHours: 4,
-    latitude: 21.15,
-    longitude: 79.09,
-    intensity: 89,
-  },
-  {
-    id: "WV-2026-0140",
-    title: "Fog",
-    location: "Amritsar, Punjab",
-    source: "Citizen portal",
-    time: "7 hrs ago",
-    status: "Verified",
-    confidence: 81,
-    reports: 7,
-    tone: "blue",
-    category: "Fog",
-    region: "Punjab",
-    ageHours: 7,
-    latitude: 31.63,
-    longitude: 74.87,
-    intensity: 81,
-  },
-  {
-    id: "WV-2026-0139",
-    title: "Heavy rainfall",
-    location: "Guwahati, Assam",
-    source: "Social media",
-    time: "13 hrs ago",
-    status: "Review",
-    confidence: 64,
-    reports: 5,
-    tone: "amber",
-    category: "Rainfall",
-    region: "Assam",
-    ageHours: 13,
-    latitude: 26.14,
-    longitude: 91.73,
-    intensity: 64,
-  },
-  {
-    id: "WV-2026-0138",
-    title: "Strong winds",
-    location: "Visakhapatnam, Andhra Pradesh",
-    source: "Citizen + IMD",
-    time: "21 hrs ago",
-    status: "Verified",
-    confidence: 86,
-    reports: 10,
-    tone: "blue",
-    category: "Strong winds",
-    region: "Andhra Pradesh",
-    ageHours: 21,
-    latitude: 17.69,
-    longitude: 83.22,
-    intensity: 86,
-  },
-  {
-    id: "WV-2026-0137",
-    title: "Dust storm",
-    location: "Jaipur, Rajasthan",
-    source: "Web report",
-    time: "2 days ago",
-    status: "Suspicious",
-    confidence: 38,
-    reports: 4,
-    tone: "coral",
-    category: "Dust storm",
-    region: "Rajasthan",
-    ageHours: 36,
-    latitude: 26.91,
-    longitude: 75.79,
-    intensity: 38,
-  },
-  {
-    id: "WV-2026-0136",
-    title: "Thunderstorm",
-    location: "Bhopal, Madhya Pradesh",
-    source: "Citizen portal",
-    time: "5 days ago",
-    status: "Verified",
-    confidence: 77,
-    reports: 6,
-    tone: "blue",
-    category: "Thunderstorm",
-    region: "Madhya Pradesh",
-    ageHours: 120,
-    latitude: 23.26,
-    longitude: 77.41,
-    intensity: 77,
-  },
-];
-
 type NavItem = {
   label: string;
   icon: typeof LayoutDashboard;
@@ -358,10 +132,19 @@ type NavItem = {
 };
 
 const navItems: NavItem[] = [
-  { label: "Admin Panel", icon: LayoutDashboard, view: "dashboard" as View },
-  { label: "History Page", icon: History, view: "history" as View },
-  { label: "Analysis Page", icon: Activity, view: "analysis" as View },
+  { label: "Admin Panel", icon: LayoutDashboard, view: "dashboard" },
+  { label: "History", icon: History, view: "history" },
+  { label: "Data Source Intelligence", icon: Database, view: "sources" },
+  { label: "Database Records", icon: TableProperties, view: "database" },
 ];
+
+function adminViewForPath(path: string): View {
+  const normalizedPath = path.replace(/\/$/, "");
+  if (normalizedPath === "/admin/history") return "history";
+  if (normalizedPath === "/admin/data-sources") return "sources";
+  if (normalizedPath === "/admin/database") return "database";
+  return "dashboard";
+}
 
 function StatusPill({ status }: { status: Status }) {
   return (
@@ -373,14 +156,15 @@ function StatusPill({ status }: { status: Status }) {
 }
 
 function AdminApp() {
-  const [view, setView] = useState<View>("dashboard");
-  const [adminReports, setAdminReports] = useState<Report[]>(reports);
-  const [reportSource, setReportSource] = useState<"API" | "MOCK">("MOCK");
+  const [view, setView] = useState<View>(adminViewForPath(window.location.pathname));
+  const [adminReports, setAdminReports] = useState<Report[]>([]);
+  const [reportSource, setReportSource] = useState<"API" | "UNAVAILABLE">("UNAVAILABLE");
+  const [reportRefreshCount, setReportRefreshCount] = useState(0);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [role, setRole] = useState<Role>("admin");
   const [darkMode, setDarkMode] = useState(false);
   const [filters, setFilters] = useState<Filters>({
-    period: "Last 24 hours",
+    period: "Last 7 days",
     event: "All events",
     region: "All India",
     status: "All statuses",
@@ -390,28 +174,49 @@ function AdminApp() {
   const [selectedAlert, setSelectedAlert] = useState<Report | null>(null);
 
   useEffect(() => {
+    const syncAdminRoute = () => {
+      setView(adminViewForPath(window.location.pathname));
+    };
+    window.addEventListener("popstate", syncAdminRoute);
+    return () => window.removeEventListener("popstate", syncAdminRoute);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated && window.location.pathname !== "/admin/login") {
+      window.history.replaceState({}, "", "/admin/login");
+    }
+  }, [isAuthenticated]);
+
+  useEffect(() => {
     let active = true;
-    void listReports().then((result) => {
-      if (!active) return;
-      if (result.ok) {
-        setAdminReports(result.data.map(apiReportToAdminReport));
-        setReportSource("API");
-      } else {
-        setReportSource("MOCK");
-      }
-    });
+    const refreshAdminReports = () => {
+      void listReports().then((result) => {
+        if (!active) return;
+        if (result.ok) {
+          setAdminReports(result.data.map(apiReportToAdminReport));
+          setReportSource("API");
+        } else {
+          setAdminReports([]);
+          setReportSource("UNAVAILABLE");
+        }
+      });
+    };
+
+    refreshAdminReports();
+
+    const handleReportSync = () => {
+      refreshAdminReports();
+    };
+    window.addEventListener("vaankan-report-synced", handleReportSync);
     return () => {
       active = false;
+      window.removeEventListener("vaankan-report-synced", handleReportSync);
     };
-  }, []);
+  }, [reportRefreshCount]);
 
   const visibleReports = useMemo(
     () =>
-      adminReports.map((report) =>
-        loadVerifiedAlertIds().includes(report.id)
-          ? { ...report, status: "Verified" as Status }
-          : report,
-      ).filter((report) => {
+      adminReports.filter((report) => {
         const periodHours =
           filters.period === "Today"
             ? 24
@@ -441,10 +246,6 @@ function AdminApp() {
     setMobileNav(false);
   };
   const verifyAlert = async (report: Report) => {
-    const verifiedReport = { ...report, status: "Verified" as Status };
-    markAlertVerified(report.id);
-    setSelectedAlert(verifiedReport);
-
     try {
       const response = await submitVerification(
         report.id,
@@ -453,38 +254,63 @@ function AdminApp() {
         "A. Sharma",
       );
       if (response.ok) {
-        const data = response.data;
+        const verifiedReport = { ...report, status: "Verified" as Status };
+        setSelectedAlert(verifiedReport);
+        setAdminReports((currentReports) => currentReports.map((item) => item.id === report.id ? verifiedReport : item));
         showNotice(
-          `Alert ${report.id} decision recorded. Email provider status: ${data.email_status}.`,
+          `Event ${report.id} verified in PostgreSQL. Submit it next to create alerts and send mail.`,
         );
+        window.dispatchEvent(new Event("vaankan-report-synced"));
       } else {
-        showNotice(`${report.id} updated locally; backend unavailable (${response.error}).`);
-        const notifications = dispatchAlertNotifications(verifiedReport);
-        void sendExternalNotifications(verifiedReport, notifications, showNotice);
+        showNotice(`Decision was not saved to PostgreSQL: ${response.error}`);
       }
     } catch {
-      const notifications = dispatchAlertNotifications(verifiedReport);
-      void sendExternalNotifications(verifiedReport, notifications, showNotice);
+      showNotice("Decision was not saved because the backend is unavailable.");
     }
+  };
+  const submitAlert = async (report: Report) => {
+    const result = await submitToVayu(report.id);
+    if (!result.ok) {
+      showNotice(`Event was not submitted: ${result.error}`);
+      return;
+    }
+    const submittedReport = { ...report, status: "Verified" as Status, submitted: true };
+    setSelectedAlert(submittedReport);
+    setAdminReports((currentReports) => currentReports.map((item) => item.id === report.id ? submittedReport : item));
+    setReportRefreshCount((count) => count + 1);
+    window.dispatchEvent(new Event("vaankan-report-synced"));
+    showNotice(`Submitted to database. Email: ${result.data.email_status}; recipients within 10 km: ${result.data.notified_count}.`);
+  };
+  const seedAdminSamples = async () => {
+    const result = await seedSampleEvents();
+    if (!result.ok) {
+      showNotice(`Sample events were not stored: ${result.error}`);
+      return;
+    }
+    setReportRefreshCount((count) => count + 1);
+    showNotice(`${result.data.created_count} sample events stored; ${result.data.pending_review_count} pending, ${result.data.pending_near_target_count} within 10 km.`);
   };
 
   if (!isAuthenticated) {
     return (
       <LoginPage
-        onLogin={(selectedRole) => {
-          setRole(selectedRole);
+        onLogin={() => {
+          setRole("admin");
+          setView("dashboard");
           setIsAuthenticated(true);
+          window.history.replaceState({}, "", "/admin");
         }}
         onAction={showNotice}
         notice={notice}
         darkMode={darkMode}
         setDarkMode={setDarkMode}
+        portal="admin"
       />
     );
   }
 
   return (
-    <div className={`app-shell ${darkMode ? "night-mode" : ""}`}>
+    <div className={`app-shell admin-theme ${darkMode ? "night-mode" : ""}`}>
       <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
         <div className="brand">
           <span className="brand-mark">
@@ -495,17 +321,18 @@ function AdminApp() {
         </div>
         <div className="network-status">
           <span className={`pulse ${reportSource === "API" ? "" : "demo"}`} />
-          {reportSource === "API" ? "Backend reports" : "Demo reports"}
+          {reportSource === "API" ? "PostgreSQL reports" : "Database unavailable"}
           <strong>{reportSource}</strong>
         </div>
         <nav>
-          <p className="nav-label">Operations</p>
+          <p className="nav-label">Admin</p>
           {navItems.map(({ label, icon: Icon, view: itemView, count }) => (
             <button
               key={label}
               className={`nav-item ${view === itemView ? "active" : ""}`}
               onClick={() => {
                 setView(itemView);
+                window.history.pushState({}, "", itemView === "history" ? "/admin/history" : itemView === "sources" ? "/admin/data-sources" : itemView === "database" ? "/admin/database" : "/admin");
                 setMobileNav(false);
               }}
             >
@@ -514,25 +341,6 @@ function AdminApp() {
               {count && <b>{count}</b>}
             </button>
           ))}
-          <p className="nav-label nav-spacer">System</p>
-          <button
-            className="nav-item"
-            onClick={() =>
-              showNotice("Source monitor is coming with the ingestion layer.")
-            }
-          >
-            <Radio size={17} />
-            Source monitor
-          </button>
-          <button
-            className="nav-item"
-            onClick={() =>
-              showNotice("Analytics are being prepared for the next release.")
-            }
-          >
-            <Activity size={17} />
-            Analytics
-          </button>
         </nav>
         <div className="sidebar-bottom">
           <div className="operator">
@@ -571,9 +379,11 @@ function AdminApp() {
                 ? "Admin Panel / Intelligence Operations"
                 : view === "history"
                   ? "Admin Submission History"
-                  : view === "analysis"
-                    ? "VAYU Weather Data Analysis Engine"
-                    : view === "review"
+                  : view === "sources"
+                    ? "Data Source Intelligence"
+                      : view === "database"
+                        ? "Database Records"
+                  : view === "review"
                       ? "Admin Review Queue"
                       : `Alert / ${selectedAlert?.id ?? "Record"}`}
             </strong>
@@ -606,6 +416,7 @@ function AdminApp() {
               onClick={() => {
                 setIsAuthenticated(false);
                 setView("dashboard");
+                window.history.pushState({}, "", "/admin");
               }}
             >
               <ArrowUpRight size={14} /> Sign out
@@ -619,6 +430,7 @@ function AdminApp() {
             visibleReports={visibleReports}
             onAction={showNotice}
             onOpenAlert={openAlert}
+            onSeedSamples={seedAdminSamples}
           />
         ) : view === "review" ? (
           <ReviewQueueEnhanced
@@ -627,18 +439,16 @@ function AdminApp() {
             visibleReports={visibleReports}
             onAction={showNotice}
             onOpenAlert={openAlert}
+            onSeedSamples={seedAdminSamples}
           />
         ) : view === "history" ? (
           <SubmissionHistoryPage />
-        ) : view === "analysis" ? (
-          <AnalysisPage
-            filters={filters}
-            setFilters={setFilters}
-            visibleReports={visibleReports}
-            onAction={showNotice}
-          />
+        ) : view === "sources" ? (
+          <DataSourceIntelligence />
+        ) : view === "database" ? (
+          <DatabaseRecordsDashboard />
         ) : selectedAlert ? (
-          <AlertDetail report={selectedAlert} onBack={() => setView("dashboard")} onAction={showNotice} onVerify={verifyAlert} />
+          <AlertDetail report={selectedAlert} onBack={() => setView("dashboard")} onAction={showNotice} onVerify={verifyAlert} onSubmit={submitAlert} />
         ) : null}
         <footer>
           <span>
@@ -660,11 +470,51 @@ function AdminApp() {
 }
 
 function App() {
-  return window.location.pathname.startsWith("/citizen") ? (
-    <CitizenPortal />
-  ) : (
-    <AdminApp />
-  );
+  const path = window.location.pathname;
+  const [analystAuthenticated, setAnalystAuthenticated] = useState(false);
+  const [analystDarkMode, setAnalystDarkMode] = useState(false);
+  const [analystLoginNotice, setAnalystLoginNotice] = useState("");
+
+  useEffect(() => {
+    for (const storage of [window.localStorage, window.sessionStorage]) {
+      for (const key of Object.keys(storage)) {
+        if (key.startsWith("vaankan-")) storage.removeItem(key);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!path.startsWith("/analyst")) return;
+    if (!analystAuthenticated && path !== "/analyst/login") {
+      window.history.replaceState({}, "", "/analyst/login");
+    } else if (analystAuthenticated && (path === "/analyst" || path === "/analyst/")) {
+      window.history.replaceState({}, "", "/analyst/dashboard");
+    }
+  }, [analystAuthenticated, path]);
+
+  if (path.startsWith("/citizen")) return <CitizenPortal />;
+  if (path.startsWith("/analyst")) {
+    if (!analystAuthenticated || path === "/analyst/login") {
+      return (
+        <LoginPage
+          portal="analyst"
+          onLogin={() => {
+            window.history.replaceState({}, "", "/analyst/dashboard");
+            setAnalystAuthenticated(true);
+          }}
+          onAction={setAnalystLoginNotice}
+          notice={analystLoginNotice}
+          darkMode={analystDarkMode}
+          setDarkMode={setAnalystDarkMode}
+        />
+      );
+    }
+    return <AnalystPortal darkMode={analystDarkMode} setDarkMode={setAnalystDarkMode} onSignOut={() => {
+      window.history.replaceState({}, "", "/analyst/login");
+      setAnalystAuthenticated(false);
+    }} />;
+  }
+  return <AdminApp />;
 }
 
 function LoginPage({
@@ -673,16 +523,17 @@ function LoginPage({
   notice,
   darkMode,
   setDarkMode,
+  portal,
 }: {
-  onLogin: (role: Role) => void;
+  onLogin: (role: "admin" | "analyst") => void;
   onAction: (message: string) => void;
   notice: string;
   darkMode: boolean;
   setDarkMode: (value: boolean) => void;
+  portal: "admin" | "analyst";
 }) {
-  const [email, setEmail] = useState("operator@vaankan.gov.in");
+  const [email, setEmail] = useState(portal === "analyst" ? "analyst@vaankan.gov.in" : "operator@vaankan.gov.in");
   const [password, setPassword] = useState("");
-  const [loginRole, setLoginRole] = useState<Role>("admin");
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -690,11 +541,11 @@ function LoginPage({
       onAction("Enter your password to continue.");
       return;
     }
-    onLogin(loginRole);
+    onLogin(portal);
   };
 
   return (
-    <div className={`login-page ${darkMode ? "night-mode" : ""}`}>
+    <div className={`login-page portal-theme-${portal} ${darkMode ? "night-mode" : ""}`}>
       <section className="login-story">
         <div className="login-brand">
           <span className="brand-mark">
@@ -703,15 +554,14 @@ function LoginPage({
           <span>VAANKAN</span>
         </div>
         <div className="login-story-copy">
-          <p className="eyebrow">NATIONAL WEATHER INTELLIGENCE</p>
+          <p className="eyebrow">{portal === "analyst" ? "ANALYST ACCESS · NATIONAL WEATHER INTELLIGENCE" : "ADMINISTRATOR ACCESS · NATIONAL WEATHER INTELLIGENCE"}</p>
           <h1>From sky to ground truth.</h1>
           <p>
-            One secure control room for verified weather events, citizen
-            observations, and evidence-led decisions.
+            {portal === "analyst" ? "Access the national weather intelligence workspace." : "Review reports, verification evidence, and administrative decisions."}
           </p>
           <div className="login-signals">
             <span>
-              <span className="pulse" /> Live network
+              <span className="pulse" /> Demo workspace
             </span>
             <span>
               <ShieldCheck size={14} /> Evidence-first
@@ -739,23 +589,9 @@ function LoginPage({
             </span>
             <span>VAANKAN</span>
           </div>
-          <p className="eyebrow">SECURE ACCESS</p>
+          <p className="eyebrow">{portal === "analyst" ? "ANALYST ACCESS" : "ADMIN ACCESS"}</p>
           <h2>Welcome back.</h2>
-          <p className="login-intro">Sign in to open your workspace.</p>
-          <div className="role-tabs">
-            <button
-              className={loginRole === "admin" ? "active" : ""}
-              onClick={() => setLoginRole("admin")}
-            >
-              <ShieldCheck size={15} /> Admin panel
-            </button>
-            <button
-              className={loginRole === "citizen" ? "active" : ""}
-              onClick={() => setLoginRole("citizen")}
-            >
-              <UsersRound size={15} /> Citizen portal
-            </button>
-          </div>
+          <p className="login-intro">{portal === "analyst" ? "Sign in to open your analyst workspace." : "Sign in to open the Admin Panel."}</p>
           <form onSubmit={submit}>
             <label>
               Email address
@@ -790,8 +626,7 @@ function LoginPage({
               </button>
             </div>
             <button className="login-submit" type="submit">
-              <ShieldCheck size={16} /> Sign in as{" "}
-              {loginRole === "admin" ? "admin" : "citizen"}{" "}
+              <ShieldCheck size={16} /> Sign in as {portal}{" "}
               <ArrowUpRight size={15} />
             </button>
           </form>
@@ -823,6 +658,7 @@ function LoginPage({
 
 type CitizenLocation = { latitude: number; longitude: number; label: string };
 type CitizenProfile = {
+  userId: string;
   name: string;
   phone: string;
   email: string;
@@ -830,122 +666,61 @@ type CitizenProfile = {
   address: string;
   latitude: string;
   longitude: string;
-  password: string;
   createdAt: string;
 };
 
-const citizenDatabaseKey = "vaankan-citizen-profiles";
-const notificationDatabaseKey = "vaankan-alert-notifications";
-const verifiedAlertsKey = "vaankan-verified-alerts";
-
-type AlertNotification = {
-  id: string;
-  reportId: string;
-  email: string;
-  phone: string;
-  distanceKm: number;
-  channels: { portal: string; email: string; sms: string };
-  createdAt: string;
-};
-
-function loadCitizenProfiles(): CitizenProfile[] {
-  try {
-    const stored = window.localStorage.getItem(citizenDatabaseKey);
-    return stored ? (JSON.parse(stored) as CitizenProfile[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveCitizenProfiles(profiles: CitizenProfile[]) {
-  window.localStorage.setItem(citizenDatabaseKey, JSON.stringify(profiles));
-}
-
-function loadAlertNotifications(): AlertNotification[] {
-  try {
-    const stored = window.localStorage.getItem(notificationDatabaseKey);
-    return stored ? (JSON.parse(stored) as AlertNotification[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function loadVerifiedAlertIds(): string[] {
-  try {
-    return JSON.parse(window.localStorage.getItem(verifiedAlertsKey) ?? "[]") as string[];
-  } catch {
-    return [];
-  }
-}
-
-function markAlertVerified(reportId: string) {
-  const verifiedIds = loadVerifiedAlertIds();
-  if (!verifiedIds.includes(reportId)) {
-    window.localStorage.setItem(verifiedAlertsKey, JSON.stringify([...verifiedIds, reportId]));
-  }
-}
-
-function dispatchAlertNotifications(report: Report) {
-  const recipients = loadCitizenProfiles()
-    .map((profile) => ({
-      profile,
-      distanceKm:
-        profile.latitude && profile.longitude
-          ? distanceInKm(
-              { latitude: report.latitude, longitude: report.longitude },
-              { latitude: Number(profile.latitude), longitude: Number(profile.longitude) },
-            )
-          : Number.POSITIVE_INFINITY,
-    }))
-    .filter(({ distanceKm }) => distanceKm <= 10);
-  const existing = loadAlertNotifications();
-  const next = recipients.map(({ profile, distanceKm }) => ({
-    id: `${report.id}-${profile.email}`,
-    reportId: report.id,
-    email: profile.email,
-    phone: profile.phone,
-    distanceKm: Number(distanceKm.toFixed(2)),
-    channels: { portal: "queued", email: "queued", sms: "queued" },
+function citizenAccountToProfile(account: CitizenAccount): CitizenProfile {
+  return {
+    userId: account.user_id,
+    name: account.name,
+    phone: account.phone,
+    email: account.email,
+    id: account.government_id,
+    address: account.address,
+    latitude: account.latitude === null ? "" : String(account.latitude),
+    longitude: account.longitude === null ? "" : String(account.longitude),
     createdAt: new Date().toISOString(),
-  }));
-  const merged = [...next, ...existing.filter((item) => !next.some((notification) => notification.id === item.id))];
-  window.localStorage.setItem(notificationDatabaseKey, JSON.stringify(merged));
-  return next;
+  };
 }
 
-async function sendExternalNotifications(
-  report: Report,
-  notifications: AlertNotification[],
-  showNotice: (message: string) => void,
-) {
-  if (!notifications.length) return;
-  const results = await Promise.all(
-    notifications.map(async (notification) => {
-      try {
-        return await dispatchNotification({
-            report_id: report.id,
-            email: notification.email,
-            phone: notification.phone,
-            subject: `VAANKAN verified alert: ${report.title}`,
-            body: `Verified VAANKAN alert: ${report.title} at ${report.location}. This event is within ${notification.distanceKm} km of your saved location.`,
-        });
-      } catch {
-        return { email: "api_unavailable", sms: "api_unavailable", sent: false, errors: ["Notification service failed"] };
-      }
-    }),
-  );
-  const sent = results.filter((result) => result.sent).length;
-  if (sent) {
-    showNotice(`${sent} user${sent === 1 ? "" : "s"} received a provider notification.`);
-  } else {
-    showNotice("No email or SMS was sent. Configure SMTP and Twilio provider settings in the backend.");
-  }
+function apiReportToCitizenEntry(report: ApiReport): CitizenReportEntry {
+  const [title, ...descriptionParts] = report.text.split(" - ");
+  const status = report.verification_status === "VERIFIED" || report.verification_status === "VERIFIED_AND_SUBMITTED_TO_VAYU"
+    ? "VERIFIED"
+    : report.verification_status === "SUSPICIOUS"
+      ? "SUSPICIOUS"
+      : report.verification_status === "UNSUPPORTED"
+        ? "UNSUPPORTED"
+        : "IN REVIEW";
+  return {
+    reportId: report.record_id,
+    status,
+    eventType: report.event_type_claimed.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+    location: report.locality || [report.city, report.district, report.state].filter(Boolean).join(", "),
+    timestamp: report.timestamp,
+    vista: status === "IN REVIEW" ? "Preliminary assessment in progress" : "Preliminary assessment recorded",
+    finalStatus: status === "VERIFIED" ? "Verified by administrator" : status === "IN REVIEW" ? "Awaiting admin verification" : status,
+    title,
+    description: report.description || descriptionParts.join(" - "),
+    severity: report.citizen_reported_severity || "Not specified",
+    notes: "",
+    media: report.image_url || report.video_url || "",
+    source: report.source_name,
+    latitude: String(report.latitude),
+    longitude: String(report.longitude),
+    district: report.district,
+    state: report.state,
+    city: report.city,
+    locality: report.locality ?? undefined,
+    pincode: report.pincode ?? undefined,
+    evidence: report.image_url || report.video_url || "No uploaded evidence",
+    ongoingStatus: report.is_ongoing ? "Ongoing" : "Not ongoing",
+    observedConditions: report.event_type_claimed,
+    impactObservations: report.description || descriptionParts.join(" - "),
+    adminDecision: status === "IN REVIEW" ? "Awaiting admin review" : status,
+    vayuStatus: report.verification_status === "VERIFIED_AND_SUBMITTED_TO_VAYU" ? "Available to analysis" : "Database-driven",
+  };
 }
-
-
-
-
-
 
 function distanceInKm(
   first: { latitude: number; longitude: number },
@@ -964,17 +739,15 @@ function distanceInKm(
 
 function CitizenPortal() {
   const [authenticated, setAuthenticated] = useState(false);
-  const [profiles, setProfiles] =
-    useState<CitizenProfile[]>(loadCitizenProfiles);
   const [activeProfile, setActiveProfile] = useState<CitizenProfile | null>(
     null,
   );
   const [showRegistration, setShowRegistration] = useState(false);
   const [citizenView, setCitizenView] = useState<
-    "home" | "alerts" | "search" | "profile"
+    "home" | "alerts" | "search" | "report" | "profile" | "activities"
   >("home");
   const [filters, setFilters] = useState<Filters>({
-    period: "Last 24 hours",
+    period: "Last 7 days",
     event: "All events",
     region: "All India",
     status: "All statuses",
@@ -983,8 +756,66 @@ function CitizenPortal() {
   const [locationStatus, setLocationStatus] = useState("Location not shared");
   const [notice, setNotice] = useState("");
   const [nightMode, setNightMode] = useState(false);
-  const [notificationRevision, setNotificationRevision] = useState(0);
-  const [verifiedAlertIds, setVerifiedAlertIds] = useState<string[]>(loadVerifiedAlertIds);
+  const [acknowledgedAlertIds, setAcknowledgedAlertIds] = useState<string[]>([]);
+  const [citizenAlertRecords, setCitizenAlertRecords] = useState<ApiCitizenAlert[]>([]);
+  const [alertsLoadedFor, setAlertsLoadedFor] = useState("");
+  const [citizenApiReports, setCitizenApiReports] = useState<Report[]>([]);
+  const [myReports, setMyReports] = useState<CitizenReportEntry[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const refreshReports = () => {
+      void listReports({ limit: 500 }).then((result) => {
+        if (active && result.ok) setCitizenApiReports(result.data.map(apiReportToAdminReport));
+      });
+    };
+    refreshReports();
+    window.addEventListener("vaankan-report-synced", refreshReports);
+    return () => {
+      active = false;
+      window.removeEventListener("vaankan-report-synced", refreshReports);
+    };
+  }, []);
+
+  useEffect(() => {
+    const email = activeProfile?.email;
+    if (!authenticated || !email) {
+      setMyReports([]);
+      return;
+    }
+    let active = true;
+    void listCitizenReports(email).then((result) => {
+      if (!active || !result.ok) return;
+      const savedReports = result.data.map(apiReportToCitizenEntry);
+      const sortedReports = savedReports.sort(
+        (left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+      );
+      setMyReports(sortedReports);
+    });
+    return () => {
+      active = false;
+    };
+  }, [authenticated, activeProfile?.email]);
+  useEffect(() => {
+    const email = activeProfile?.email;
+    if (!authenticated || !email) return;
+    let active = true;
+    const refreshAlerts = () => {
+      void listCitizenAlerts(email).then((result) => {
+        if (active && result.ok) {
+          setCitizenAlertRecords(result.data);
+          setAlertsLoadedFor(email);
+          setAcknowledgedAlertIds(result.data.filter((alert) => alert.acknowledged).map((alert) => alert.alert_id));
+        }
+      });
+    };
+    refreshAlerts();
+    const interval = window.setInterval(refreshAlerts, 15000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [authenticated, activeProfile?.email]);
   const watchId = useRef<number | null>(null);
   const showNotice = (message: string) => {
     setNotice(message);
@@ -1005,33 +836,34 @@ function CitizenPortal() {
         };
         setLocation(nextLocation);
         if (activeProfile) {
-          const updatedProfile = {
-            ...activeProfile,
-            latitude: String(nextLocation.latitude),
-            longitude: String(nextLocation.longitude),
-          };
-          setActiveProfile(updatedProfile);
-          const updatedProfiles = profiles.map((profile) =>
-            profile.email === updatedProfile.email ? updatedProfile : profile,
-          );
-          setProfiles(updatedProfiles);
-          saveCitizenProfiles(updatedProfiles);
+          void updateCitizenProfile(activeProfile.email, {
+            latitude: nextLocation.latitude,
+            longitude: nextLocation.longitude,
+          }).then((result) => {
+            if (!result.ok) {
+              setLocationStatus(`GPS captured but not saved to database (${result.error})`);
+              return;
+            }
+            setActiveProfile(citizenAccountToProfile(result.data));
+            setLocationStatus("GPS location saved to your database profile");
+          });
+        } else {
+          setLocationStatus("GPS location updated");
         }
-        setLocationStatus("GPS location updated");
       },
       () => setLocationStatus("Location permission declined"),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
     );
   };
   useEffect(() => {
-    const refreshNotifications = (event: StorageEvent) => {
-      if (event.key === verifiedAlertsKey || event.key === notificationDatabaseKey) {
-        setVerifiedAlertIds(loadVerifiedAlertIds());
-        setNotificationRevision((revision) => revision + 1);
-      }
-    };
-    window.addEventListener("storage", refreshNotifications);
-    return () => window.removeEventListener("storage", refreshNotifications);
+    const currentPath = window.location.pathname;
+    if (currentPath === "/citizen/report") {
+      setCitizenView("report");
+    } else if (currentPath === "/citizen/activities") {
+      setCitizenView("activities");
+    } else if (currentPath === "/citizen") {
+      setCitizenView("home");
+    }
   }, []);
   useEffect(() => {
     if (!authenticated || !navigator.geolocation) return;
@@ -1043,23 +875,15 @@ function CitizenPortal() {
           label: `Current location · ${position.coords.latitude.toFixed(4)}, ${position.coords.longitude.toFixed(4)}`,
         };
         setLocation(nextLocation);
-        setActiveProfile((currentProfile) => {
-          if (!currentProfile) return currentProfile;
-          const updatedProfile = {
-            ...currentProfile,
-            latitude: String(nextLocation.latitude),
-            longitude: String(nextLocation.longitude),
-          };
-          setProfiles((currentProfiles) => {
-            const updatedProfiles = currentProfiles.map((profile) =>
-              profile.email === updatedProfile.email ? updatedProfile : profile,
-            );
-            saveCitizenProfiles(updatedProfiles);
-            return updatedProfiles;
+        setLocationStatus("GPS tracking active; saving location");
+        if (activeProfile) {
+          void updateCitizenProfile(activeProfile.email, {
+            latitude: nextLocation.latitude,
+            longitude: nextLocation.longitude,
+          }).then((result) => {
+            if (result.ok) setActiveProfile(citizenAccountToProfile(result.data));
           });
-          return updatedProfile;
-        });
-        setLocationStatus("GPS tracking active");
+        }
       },
       () =>
         setLocationStatus("GPS permission is required for local intelligence"),
@@ -1069,38 +893,51 @@ function CitizenPortal() {
       if (watchId.current !== null)
         navigator.geolocation.clearWatch(watchId.current);
     };
-  }, [authenticated]);
+  }, [authenticated, activeProfile?.email]);
   const completeLogin = (profile: CitizenProfile) => {
+    setLocation(profile.latitude && profile.longitude ? {
+      latitude: Number(profile.latitude),
+      longitude: Number(profile.longitude),
+      label: `${Number(profile.latitude).toFixed(4)}, ${Number(profile.longitude).toFixed(4)}`,
+    } : null);
     setActiveProfile(profile);
     setAuthenticated(true);
   };
-  const persistProfile = (profile: CitizenProfile) => {
-    const updatedProfiles = profiles.some(
-      (item) => item.email === profile.email,
-    )
-      ? profiles.map((item) => (item.email === profile.email ? profile : item))
-      : [...profiles, profile];
-    setProfiles(updatedProfiles);
-    setActiveProfile(profile);
-    saveCitizenProfiles(updatedProfiles);
-    setAuthenticated(true);
-    setCitizenView("profile");
-    showNotice("Your citizen profile was saved.");
+  const persistProfile = async (profile: CitizenProfile) => {
+    const result = await updateCitizenProfile(profile.email, {
+      name: profile.name,
+      phone: profile.phone,
+      address: profile.address,
+      government_id: profile.id,
+      latitude: profile.latitude ? Number(profile.latitude) : null,
+      longitude: profile.longitude ? Number(profile.longitude) : null,
+    });
+    if (!result.ok) {
+      showNotice(`Profile was not saved to the database (${result.error}).`);
+      return;
+    }
+    setActiveProfile(citizenAccountToProfile(result.data));
+    showNotice("Your profile was saved to the database.");
   };
   const logout = () => {
     setAuthenticated(false);
     setActiveProfile(null);
     setCitizenView("home");
   };
+  const acknowledgeAlert = async (alertId: string) => {
+    if (!activeProfile) return;
+    const result = await acknowledgeCitizenAlert(activeProfile.email, alertId);
+    if (!result.ok) {
+      showNotice(`Acknowledgement was not saved: ${result.error}`);
+      return;
+    }
+    setAcknowledgedAlertIds((current) => current.includes(alertId) ? current : [...current, alertId]);
+    showNotice(result.data.already_acknowledged ? "This alert was already acknowledged." : "Alert acknowledgement saved to PostgreSQL.");
+  };
+
   const visibleReports = useMemo(
     () => {
-      return reports
-        .map((report) =>
-          verifiedAlertIds.includes(report.id)
-            ? { ...report, status: "Verified" as Status }
-            : report,
-        )
-        .filter((report) => {
+      return citizenApiReports.filter((report) => {
           const periodHours =
             filters.period === "Today"
               ? 24
@@ -1112,28 +949,48 @@ function CitizenPortal() {
             (filters.region === "All India" || report.region === filters.region) &&
             report.ageHours <= periodHours
           );
-        });
+      });
     },
-    [filters, verifiedAlertIds],
-  );
-  const locationReports = useMemo(
-    () =>
-      location
-        ? visibleReports
-            .map((report) => ({
-              ...report,
-              distance: distanceInKm(location, report),
-            }))
-            .filter((report) => report.distance <= 50)
-        : [],
-    [location, visibleReports],
+    [filters, citizenApiReports],
   );
   const nearbyAlerts = useMemo(
     () =>
-      locationReports.filter(
-        (report) => report.distance <= 10 && report.status !== "Suspicious",
-      ),
-    [locationReports],
+      location
+        ? (alertsLoadedFor === activeProfile?.email ? citizenAlertRecords : [])
+            .map((alert) => {
+              const distance = distanceInKm(location, { latitude: alert.latitude, longitude: alert.longitude });
+              const category = alert.event_type.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+              const alertReport: Report & { distance: number } = {
+                id: alert.alert_id,
+                title: alert.title,
+                location: alert.location,
+                source: alert.source,
+                time: new Date(alert.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }),
+                timestamp: alert.timestamp,
+                status: "Verified",
+                submitted: true,
+                confidence: null,
+                reports: 1,
+                tone: "blue",
+                category,
+                region: alert.location.split(",").at(-1)?.trim() ?? "India",
+                ageHours: alert.age_hours,
+                latitude: alert.latitude,
+                longitude: alert.longitude,
+                intensity: null,
+                distance,
+              };
+              return alertReport;
+            })
+            .filter((alert) => {
+              const periodHours = filters.period === "Last 7 days" ? 168 : 24;
+              const matchesEvent = filters.event === "All events" || alert.category.toLowerCase() === filters.event.toLowerCase();
+              const matchesRegion = filters.region === "All India" || alert.region.toLowerCase() === filters.region.toLowerCase();
+              const matchesStatus = filters.status === "All statuses" || filters.status === "Verified";
+              return alert.distance <= 10 && alert.ageHours <= periodHours && matchesEvent && matchesRegion && matchesStatus;
+            })
+        : [],
+    [activeProfile?.email, alertsLoadedFor, citizenAlertRecords, filters, location],
   );
 
   if (!authenticated)
@@ -1141,9 +998,12 @@ function CitizenPortal() {
       <CitizenLoginDatabase
         showRegistration={showRegistration}
         setShowRegistration={setShowRegistration}
-        profiles={profiles}
         onLogin={completeLogin}
-        onRegister={persistProfile}
+        onRegister={(profile) => {
+          setActiveProfile(profile);
+          setAuthenticated(true);
+          setCitizenView("profile");
+        }}
       />
     );
 
@@ -1165,16 +1025,40 @@ function CitizenPortal() {
           </button>
           <button
             className={citizenView === "search" ? "active" : ""}
-            onClick={() => setCitizenView("search")}
+            onClick={() => {
+              setCitizenView("search");
+              window.history.pushState({}, "", "/citizen");
+            }}
           >
             <Search size={16} /> Search
           </button>
           <button
+            className={citizenView === "report" ? "active" : ""}
+            onClick={() => {
+              setCitizenView("report");
+              window.history.pushState({}, "", "/citizen/report");
+            }}
+          >
+            <FileText size={16} /> Report
+          </button>
+          <button
             className={citizenView === "alerts" ? "active" : ""}
-            onClick={() => setCitizenView("alerts")}
+            onClick={() => {
+              setCitizenView("alerts");
+              window.history.pushState({}, "", "/citizen");
+            }}
           >
             <Bell size={16} /> Alerts{" "}
-            {nearbyAlerts.length > 0 && <b>{nearbyAlerts.length}</b>}
+            {nearbyAlerts.filter((alert) => !acknowledgedAlertIds.includes(alert.id)).length > 0 && <b>{nearbyAlerts.filter((alert) => !acknowledgedAlertIds.includes(alert.id)).length}</b>}
+          </button>
+          <button
+            className={citizenView === "activities" ? "active" : ""}
+            onClick={() => {
+              setCitizenView("activities");
+              window.history.pushState({}, "", "/citizen/activities");
+            }}
+          >
+            <Clock3 size={16} /> Activities
           </button>
           <button
             className={citizenView === "profile" ? "active" : ""}
@@ -1202,21 +1086,81 @@ function CitizenPortal() {
             filters={filters}
             setFilters={setFilters}
             visibleReports={visibleReports}
-            nearbyAlerts={nearbyAlerts}
+            nearbyAlerts={nearbyAlerts.filter((alert) => !acknowledgedAlertIds.includes(alert.id))}
             location={location}
             locationStatus={locationStatus}
             requestLocation={requestLocation}
             onAction={showNotice}
           />
+        ) : citizenView === "report" ? (
+          <CitizenReportPage
+            profile={activeProfile}
+            reportHistory={myReports}
+            onSubmit={async (entry) => {
+              const eventTypeMap: Record<string, ApiReport["event_type_claimed"]> = {
+                Rainfall: "rainfall",
+                Thunderstorm: "thunderstorm",
+                Flooding: "flooding",
+                Heatwave: "heatwave",
+                Fog: "fog",
+                "Dust storm": "dust_storm",
+                "Strong winds": "strong_winds",
+              };
+
+              const payload: ApiReport = {
+                record_id: entry.reportId,
+                source_type: "citizen",
+                source_name: entry.source,
+                timestamp: entry.timestamp,
+                text: `${entry.title} - ${entry.description}`.trim(),
+                language: "en",
+                latitude: Number.parseFloat(entry.latitude || "0") || 0,
+                longitude: Number.parseFloat(entry.longitude || "0") || 0,
+                city: entry.city || "Chennai",
+                district: entry.district || "Chennai",
+                state: entry.state || "Tamil Nadu",
+                event_type_claimed: eventTypeMap[entry.eventType] ?? "rainfall",
+                image_url: entry.media && /^https?:\/\//i.test(entry.media) ? entry.media : null,
+                video_url: null,
+                verification_status: "PENDING",
+                citizen_id: activeProfile?.email ?? undefined,
+                description: entry.description,
+                locality: entry.locality,
+                pincode: entry.pincode,
+                citizen_reported_severity: entry.severity,
+                is_ongoing: entry.ongoingStatus === "Ongoing",
+              };
+
+              const backendResult = await createReport(payload);
+              if (!backendResult.ok) {
+                showNotice(`Report was not saved. PostgreSQL returned: ${backendResult.error}`);
+                return;
+              } else {
+                showNotice(`Report ${entry.reportId} submitted successfully.`);
+              }
+              if (activeProfile) {
+                setMyReports((currentReports) => {
+                  return [entry, ...currentReports.filter((report) => report.reportId !== entry.reportId)];
+                });
+              }
+
+              window.dispatchEvent(new Event("vaankan-report-synced"));
+              setCitizenView("home");
+              window.history.pushState({}, "", "/citizen");
+            }}
+            onAction={showNotice}
+          />
         ) : citizenView === "alerts" ? (
           <CitizenAlerts
-            nearbyAlerts={nearbyAlerts}
+            nearbyAlerts={nearbyAlerts.filter((alert) => !acknowledgedAlertIds.includes(alert.id))}
             location={location}
             locationStatus={locationStatus}
             onAction={showNotice}
             profile={activeProfile}
-            notificationRevision={notificationRevision}
+            onAcknowledge={acknowledgeAlert}
           />
+        ) : citizenView === "activities" ? (
+          <CitizenActivities citizenId={activeProfile?.email ?? ""} />
         ) : citizenView === "search" ? (
           <CitizenSearch reports={visibleReports} />
         ) : (
@@ -1228,6 +1172,10 @@ function CitizenPortal() {
           />
         )}
       </main>
+      <CitizenAssistantPanel
+        profile={activeProfile}
+        locationLabel={location ? location.label : "Location not shared"}
+      />
       {notice && (
         <div className="citizen-toast">
           <Check size={16} />
@@ -1238,23 +1186,466 @@ function CitizenPortal() {
   );
 }
 
+function CitizenAssistantPanel({
+  profile,
+  locationLabel,
+}: {
+  profile: CitizenProfile | null;
+  locationLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState<Array<{ role: "assistant" | "user"; content: string }>>([
+    {
+      role: "assistant",
+      content: "Hello! I can help explain nearby weather activity, active alerts, and the status of your reports.",
+    },
+  ]);
+  const [conversationId, setConversationId] = useState(`citizen-${profile?.email ?? "observer"}`);
+
+  const quickQuestions = [
+    "What is happening near me?",
+    "Are there any active weather events?",
+    "How do I report heavy rainfall?",
+    "What does IN REVIEW mean?",
+    "What does VERIFIED mean?",
+    "What is happening near Chennai?",
+  ];
+
+  const sendMessage = async (nextMessage?: string) => {
+    const message = (nextMessage ?? draft).trim();
+    if (!message || loading) return;
+
+    setMessages((current) => [...current, { role: "user", content: message }]);
+    setDraft("");
+    setLoading(true);
+
+    try {
+      const response = await sendCitizenAssistantMessage(message, conversationId, locationLabel);
+      setMessages((current) => [...current, { role: "assistant", content: response.message }]);
+      setConversationId(response.conversation_id);
+    } catch {
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: "VAANKAN Assistant is temporarily unavailable. Please try again shortly." },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="assistant-floating-shell">
+      {open ? (
+        <div className="assistant-panel citizen-assistant-panel">
+          <div className="assistant-header">
+            <div>
+              <p className="assistant-kicker">VAANKAN</p>
+              <h3>VAANKAN Assistant</h3>
+            </div>
+            <button type="button" className="assistant-close" onClick={() => setOpen(false)} aria-label="Close assistant">
+              ×
+            </button>
+          </div>
+          <div className="assistant-context">{profile ? `${profile.name} · ${locationLabel}` : `Citizen view · ${locationLabel}`}</div>
+          <div className="assistant-quick-questions">
+            {quickQuestions.map((question) => (
+              <button key={question} type="button" onClick={() => void sendMessage(question)} disabled={loading}>
+                {question}
+              </button>
+            ))}
+          </div>
+          <div className="assistant-message-list">
+            {messages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className={`assistant-message ${message.role}`}>
+                {message.content}
+              </div>
+            ))}
+            {loading && <div className="assistant-message assistant loading">VAANKAN is checking the available weather intelligence...</div>}
+          </div>
+          <div className="assistant-input-row">
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void sendMessage();
+                }
+              }}
+              placeholder="Ask VAANKAN..."
+              aria-label="Ask the VAANKAN assistant"
+            />
+            <button type="button" onClick={() => void sendMessage()} disabled={loading || !draft.trim()}>
+              Send
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" className="assistant-launcher" onClick={() => setOpen(true)} aria-label="Open VAANKAN Assistant">
+          <MessageSquare size={18} />
+          <span>VAANKAN Assistant</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+type CitizenReportEntry = {
+  reportId: string;
+  status: string;
+  eventType: string;
+  location: string;
+  timestamp: string;
+  vista: string;
+  finalStatus: string;
+  title: string;
+  description: string;
+  severity: string;
+  notes: string;
+  media: string;
+  source: string;
+  latitude?: string;
+  longitude?: string;
+  district?: string;
+  state?: string;
+  city?: string;
+  locality?: string;
+  pincode?: string;
+  evidence?: string;
+  ongoingStatus?: string;
+  observedConditions?: string;
+  impactObservations?: string;
+  adminDecision?: string;
+  vayuStatus?: string;
+};
+
+function CitizenReportPage({
+  profile,
+  reportHistory,
+  onSubmit,
+  onAction,
+}: {
+  profile: CitizenProfile | null;
+  reportHistory: CitizenReportEntry[];
+  onSubmit: (entry: CitizenReportEntry) => void;
+  onAction: (message: string) => void;
+}) {
+  const [form, setForm] = useState({
+    title: "",
+    eventType: "Rainfall",
+    location: profile?.address ?? "",
+    latitude: profile?.latitude ?? "",
+    longitude: profile?.longitude ?? "",
+    timestamp: new Date().toISOString().slice(0, 16),
+    severity: "Moderate",
+    description: "",
+    notes: "",
+    media: "",
+  });
+  const [error, setError] = useState("");
+  const [selectedReport, setSelectedReport] = useState<CitizenReportEntry | null>(null);
+  const sortedHistory = useMemo(
+    () => [...reportHistory].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+    [reportHistory],
+  );
+
+  const update = (key: keyof typeof form, value: string) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const title = form.title.trim();
+    const description = form.description.trim();
+    const location = form.location.trim();
+
+    if (!title || !description || !location) {
+      setError("Add the event title, description, and incident location before submitting.");
+      return;
+    }
+
+    const reportId = `CIT-${new Date().toISOString().slice(2, 10).replace(/[-:T.]/g, "")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const entry: CitizenReportEntry = {
+      reportId,
+      status: "IN REVIEW",
+      eventType: form.eventType,
+      location,
+      timestamp: new Date(form.timestamp).toISOString(),
+      vista: "Preliminary assessment in progress",
+      finalStatus: "Awaiting admin verification",
+      title,
+      description,
+      severity: form.severity,
+      notes: form.notes.trim(),
+      media: form.media.trim(),
+      source: profile?.email ? `Citizen • ${profile.email}` : "Citizen portal",
+      latitude: form.latitude || "",
+      longitude: form.longitude || "",
+      district: "Tamil Nadu",
+      state: "Tamil Nadu",
+      city: location.split(",").slice(-1)[0]?.trim() || "Chennai",
+      locality: location,
+      pincode: "",
+      evidence: form.media.trim() || "No uploaded evidence",
+      ongoingStatus: "Ongoing",
+      observedConditions: form.eventType,
+      impactObservations: description,
+      adminDecision: "Awaiting admin review",
+      vayuStatus: "Not yet submitted",
+    };
+
+    setError("");
+    onSubmit(entry);
+    onAction("Your weather report was accepted into the VISTA intake flow.");
+  };
+
+  return (
+    <div className="citizen-page">
+      <div className="citizen-welcome">
+        <div>
+          <p className="eyebrow citizen-eyebrow">REPORT WEATHER EVENT</p>
+          <h1>Submit a weather observation.</h1>
+          <p>Capture the event, location, and supporting evidence for VISTA review and admin verification.</p>
+        </div>
+      </div>
+
+      <div className="report-page-grid">
+        <section className="profile-editor report-form-panel">
+          <div className="profile-editor-heading">
+            <div className="citizen-location-icon">
+              <FileText size={20} />
+            </div>
+            <div>
+              <span className="citizen-card-label">GROUND OBSERVATION</span>
+              <h2>Citizen weather report</h2>
+            </div>
+          </div>
+
+          <form onSubmit={submit}>
+            <div className="profile-form-grid">
+              <label>
+                Incident title
+                <input
+                  value={form.title}
+                  onChange={(event) => update("title", event.target.value)}
+                  placeholder="Heavy rain and street flooding"
+                />
+              </label>
+
+              <label>
+                Event type
+                <select
+                  value={form.eventType}
+                  onChange={(event) => update("eventType", event.target.value)}
+                  style={{ border: "1px solid #cfdccf", background: "#fffdf8", outline: "none", color: "#27352f", padding: "11px 12px", fontSize: 12 }}
+                >
+                  <option>Rainfall</option>
+                  <option>Thunderstorm</option>
+                  <option>Flooding</option>
+                  <option>Heatwave</option>
+                  <option>Fog</option>
+                  <option>Dust storm</option>
+                  <option>Strong winds</option>
+                </select>
+              </label>
+
+              <label className="profile-address">
+                Incident location
+                <input
+                  value={form.location}
+                  onChange={(event) => update("location", event.target.value)}
+                  placeholder="Medavakkam, Chennai"
+                />
+              </label>
+
+              <label>
+                Latitude
+                <input
+                  value={form.latitude}
+                  onChange={(event) => update("latitude", event.target.value)}
+                  placeholder="12.9552"
+                />
+              </label>
+
+              <label>
+                Longitude
+                <input
+                  value={form.longitude}
+                  onChange={(event) => update("longitude", event.target.value)}
+                  placeholder="80.1451"
+                />
+              </label>
+
+              <label>
+                Observation time
+                <input
+                  type="datetime-local"
+                  value={form.timestamp}
+                  onChange={(event) => update("timestamp", event.target.value)}
+                />
+              </label>
+
+              <label>
+                Severity
+                <select
+                  value={form.severity}
+                  onChange={(event) => update("severity", event.target.value)}
+                  style={{ border: "1px solid #cfdccf", background: "#fffdf8", outline: "none", color: "#27352f", padding: "11px 12px", fontSize: 12 }}
+                >
+                  <option>Low</option>
+                  <option>Moderate</option>
+                  <option>High</option>
+                  <option>Extreme</option>
+                </select>
+              </label>
+
+              <label className="profile-address">
+                What did you observe?
+                <textarea
+                  value={form.description}
+                  onChange={(event) => update("description", event.target.value)}
+                  placeholder="Describe the rainfall, flooding, wind, damage, visibility, or other conditions you observed."
+                  rows={5}
+                  style={{ border: "1px solid #cfdccf", background: "#fffdf8", outline: "none", color: "#27352f", padding: "11px 12px", fontSize: 12, resize: "vertical" }}
+                />
+              </label>
+
+              <label className="profile-address">
+                Supporting media or reference link
+                <input
+                  value={form.media}
+                  onChange={(event) => update("media", event.target.value)}
+                  placeholder="https://example.com/image.jpg or upload note"
+                />
+              </label>
+
+              <label className="profile-address">
+                Additional notes
+                <textarea
+                  value={form.notes}
+                  onChange={(event) => update("notes", event.target.value)}
+                  placeholder="Road conditions, power outage, nearby waterlogging, or any witness detail."
+                  rows={3}
+                  style={{ border: "1px solid #cfdccf", background: "#fffdf8", outline: "none", color: "#27352f", padding: "11px 12px", fontSize: 12, resize: "vertical" }}
+                />
+              </label>
+            </div>
+
+            {error && (
+              <div className="citizen-inline-notice" style={{ marginTop: 16 }}>{error}</div>
+            )}
+
+            <div className="profile-editor-actions" style={{ marginTop: 18 }}>
+              <span>Submitted reports are routed to VISTA for preliminary assessment.</span>
+              <button type="submit" className="citizen-submit">
+                Submit report <ArrowUpRight size={15} />
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <aside className="profile-editor report-history-panel">
+          <div className="profile-editor-heading">
+            <div className="citizen-location-icon">
+              <History size={20} />
+            </div>
+            <div>
+              <span className="citizen-card-label">REPORTS</span>
+              <h2>HISTORY</h2>
+            </div>
+          </div>
+
+          <div className="report-history-list">
+            {sortedHistory.length ? (
+              sortedHistory.map((report) => (
+                <button
+                  key={report.reportId}
+                  type="button"
+                  className={`report-history-item ${selectedReport?.reportId === report.reportId ? "selected" : ""}`}
+                  onClick={() => setSelectedReport(report)}
+                >
+                  <div className="report-history-item-main">
+                    <strong>{report.title || report.eventType}</strong>
+                    <span>
+                      {new Date(report.timestamp).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                    </span>
+                  </div>
+                  <span className={`report-history-status ${report.status.toLowerCase().replace(/\s+/g, "-")}`}>
+                    {report.status}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <div className="no-alerts report-empty-state">
+                <span><History size={22} /></span>
+                <h2>No reports submitted yet.</h2>
+                <p>Your submitted weather reports will appear here.</p>
+              </div>
+            )}
+          </div>
+
+          {selectedReport && (
+            <div className="report-history-detail-overlay">
+              <div className="report-history-detail-pane">
+                <div className="report-detail-header">
+                  <h3>REPORT DETAILS</h3>
+                  <button type="button" onClick={() => setSelectedReport(null)} aria-label="Close report details">×</button>
+                </div>
+
+                <div className="report-detail-summary">
+                  <div className="report-detail-id">{selectedReport.reportId}</div>
+                  <h4>{selectedReport.title || selectedReport.eventType}</h4>
+                  <div className="report-detail-location">{selectedReport.location}</div>
+                </div>
+
+                <div className="report-detail-meta">
+                  <div className="meta-row">
+                    <small>Status</small>
+                    <strong>{selectedReport.status}</strong>
+                  </div>
+                  <div className="meta-row">
+                    <small>Submitted</small>
+                    <span>{new Date(selectedReport.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</span>
+                  </div>
+                  <div className="meta-row">
+                    <small>Description</small>
+                    <span>{selectedReport.description || "No description provided."}</span>
+                  </div>
+                  <div className="meta-row">
+                    <small>Severity</small>
+                    <span>{selectedReport.severity}</span>
+                  </div>
+                  <div className="meta-row">
+                    <small>Evidence</small>
+                    <span>{selectedReport.evidence || selectedReport.media || "No uploaded evidence"}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 function CitizenLoginDatabase({
   showRegistration,
   setShowRegistration,
-  profiles,
   onLogin,
   onRegister,
   notice = "",
 }: {
   showRegistration: boolean;
   setShowRegistration: (value: boolean) => void;
-  profiles: CitizenProfile[];
   onLogin: (profile: CitizenProfile) => void;
   onRegister: (profile: CitizenProfile) => void;
   notice?: string;
 }) {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
     name: "",
     phone: "",
@@ -1266,47 +1657,53 @@ function CitizenLoginDatabase({
   });
   const update = (key: keyof typeof form, value: string) =>
     setForm({ ...form, [key]: value });
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setMessage("");
-    if (!password || !form.email) {
-      setMessage("Email and password are required.");
-      return;
-    }
+    const email = form.email.trim();
+    const errors: string[] = [];
+    if (!email) errors.push("Email address is required");
+    else if (email.length < 5 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push("Email address must be valid");
+    if (!password) errors.push("Password is required");
+    else if (password.length < 8) errors.push("Password must be at least 8 characters");
     if (showRegistration) {
-      if (!form.name || !form.phone || !form.id || !form.address) {
-        setMessage("Add your personal details and address to register.");
-        return;
-      }
-      if (
-        profiles.some(
-          (profile) => profile.email.toLowerCase() === form.email.toLowerCase(),
-        )
-      ) {
-        setMessage("An account with this email already exists.");
-        return;
-      }
-      onRegister({
-        ...form,
-        latitude: "",
-        longitude: "",
+      if (form.name.trim().length < 2) errors.push("Full name must be at least 2 characters");
+      if (form.phone.trim().length < 7) errors.push("Phone number must be at least 7 characters");
+      if (form.id.trim().length < 4) errors.push("Government ID must be at least 4 characters");
+      else if (form.id.trim().length > 80) errors.push("Government ID must be no more than 80 characters");
+      if (form.address.trim().length < 3) errors.push("Address must be at least 3 characters");
+    }
+    if (errors.length) {
+      setMessage(errors.join(". ") + ".");
+      return;
+    }
+    setSubmitting(true);
+    try {
+    if (showRegistration) {
+      const result = await registerCitizen({
+        name: form.name.trim(),
+        email,
         password,
-        createdAt: new Date().toISOString(),
+        address: form.address.trim(),
+        phone: form.phone.trim(),
+        government_id: form.id.trim(),
       });
+      if (!result.ok) {
+        setMessage(`Registration could not be saved: ${result.error}`);
+        return;
+      }
+      onRegister(citizenAccountToProfile(result.data));
       return;
     }
-    const profile = profiles.find(
-      (item) =>
-        item.email.toLowerCase() === form.email.toLowerCase() &&
-        item.password === password,
-    );
-    if (!profile) {
-      setMessage(
-        "No matching citizen account found. Register first or check your password.",
-      );
+    const result = await loginCitizen(email, password);
+    if (!result.ok) {
+      setMessage(`Sign-in failed: ${result.error}`);
       return;
     }
-    onLogin(profile);
+    onLogin(citizenAccountToProfile(result.data));
+    } finally {
+      setSubmitting(false);
+    }
   };
   return (
     <div className="citizen-login">
@@ -1411,10 +1808,12 @@ function CitizenLoginDatabase({
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="Enter your password"
+                minLength={8}
+                autoComplete={showRegistration ? "new-password" : "current-password"}
               />
             </label>
-            <button className="citizen-submit" type="submit">
-              {showRegistration ? "Create account" : "Sign in"}{" "}
+            <button className="citizen-submit" type="submit" disabled={submitting}>
+              {submitting ? "Connecting..." : showRegistration ? "Create account" : "Sign in"}{" "}
               <ArrowUpRight size={15} />
             </button>
           </form>
@@ -1427,8 +1826,7 @@ function CitizenLoginDatabase({
               : "New here? Create a citizen profile"}
           </button>
           <small className="citizen-demo-note">
-            Profiles are stored locally for this MVP. GPS permission is
-            requested after sign-in and tracked while the portal is open.
+            Citizen accounts and reports are stored in PostgreSQL. GPS is saved after permission is granted.
           </small>
           {(notice || message) && (
             <div className="citizen-inline-notice">{notice || message}</div>
@@ -1476,7 +1874,7 @@ function CitizenProfileEditor({
             <UserRound size={20} />
           </div>
           <div>
-            <span className="citizen-card-label">SAVED LOCALLY</span>
+            <span className="citizen-card-label">DATABASE PROFILE</span>
             <h2>Edit your details</h2>
           </div>
         </div>
@@ -1549,7 +1947,7 @@ function CitizenProfileEditor({
           </div>
         </div>
         <div className="profile-editor-actions">
-          <span>Last saved locally from this browser</span>
+          <span>Profile changes are saved to PostgreSQL</span>
           <button className="citizen-submit" onClick={() => onSave(form)}>
             Save profile <Check size={15} />
           </button>
@@ -1719,6 +2117,79 @@ function CitizenHome({
   );
 }
 
+function CitizenActivities({ citizenId }: { citizenId: string }) {
+  const [activityFeed, setActivityFeed] = useState<CitizenActivity[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!citizenId) {
+      setActivityFeed([]);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    void listCitizenActivities(citizenId).then((result) => {
+      if (!active) return;
+      if (result.ok) {
+        setActivityFeed(result.data);
+        setError("");
+      } else {
+        setError(`Activities could not be loaded from PostgreSQL (${result.error}).`);
+      }
+      setLoading(false);
+    });
+    return () => { active = false; };
+  }, [citizenId]);
+  return (
+    <div className="citizen-page citizen-activities-page">
+      <div className="citizen-welcome">
+        <div>
+          <p className="eyebrow citizen-eyebrow">CITIZEN PORTAL / ACTIVITIES</p>
+          <h1>Your activity</h1>
+          <p>Report and alert events recorded for your account.</p>
+        </div>
+        <span className="citizen-activity-count">{activityFeed.length} records</span>
+      </div>
+      <section className="citizen-activity-panel citizen-activities-full">
+        <div className="citizen-card-heading">
+          <div>
+            <span className="citizen-card-label">ACTIVITY LOG</span>
+            <h2>Recent activity</h2>
+          </div>
+        </div>
+        {error ? <div className="citizen-activity-empty">{error}</div> : loading ? <div className="citizen-activity-empty">Loading activities from PostgreSQL...</div> : <CitizenActivityFeed activityFeed={activityFeed} />}
+      </section>
+    </div>
+  );
+}
+
+function CitizenActivityFeed({
+  activityFeed,
+}: {
+  activityFeed: CitizenActivity[];
+}) {
+  if (!activityFeed.length) {
+    return <div className="citizen-activity-empty">No activity has been recorded for this account yet.</div>;
+  }
+  return (
+    <div className="citizen-activity-list">
+      {activityFeed.map((item) => (
+        <div className="citizen-activity-item" key={item.id}>
+          <span className={`citizen-activity-status ${item.status.toLowerCase().replace(/\s+/g, "-")}`}>
+            {item.status}
+          </span>
+          <div>
+            <strong>{item.title}</strong>
+            <small>{item.description}</small>
+          </div>
+          <time>{new Date(item.timestamp).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</time>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function CitizenSearch({ reports: searchableReports }: { reports: Report[] }) {
   const [query, setQuery] = useState("");
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
@@ -1785,14 +2256,14 @@ function CitizenAlerts({
   locationStatus,
   onAction,
   profile,
-  notificationRevision,
+  onAcknowledge,
 }: {
   nearbyAlerts: Array<Report & { distance: number }>;
   location: CitizenLocation | null;
   locationStatus: string;
   onAction: (message: string) => void;
   profile: CitizenProfile | null;
-  notificationRevision: number;
+  onAcknowledge: (alertId: string) => void | Promise<void>;
 }) {
   return (
     <div className="citizen-page">
@@ -1836,6 +2307,12 @@ function CitizenAlerts({
               <p>
                 {alert.location} · {alert.time}
               </p>
+              <div className="profile-editor-actions" style={{ marginTop: 14, paddingTop: 14 }}>
+                <span>Requires your acknowledgement</span>
+                <button type="button" className="citizen-submit" onClick={() => onAcknowledge(alert.id)}>
+                  Acknowledge <Check size={15} />
+                </button>
+              </div>
             </article>
           ))
         ) : (
@@ -1860,29 +2337,16 @@ function CitizenAlerts({
           </div>
         )}
       </section>
-      <AlertDeliveryModule key={notificationRevision} profile={profile} onAction={onAction} />
+      <AlertDeliveryModule profile={profile} />
     </div>
   );
 }
 
 function AlertDeliveryModule({
   profile,
-  onAction,
 }: {
   profile: CitizenProfile | null;
-  onAction: (message: string) => void;
 }) {
-  const [sent, setSent] = useState({ portal: true, sms: true, email: true });
-  const recentNotification = profile
-    ? loadAlertNotifications().find((notification) => notification.email === profile.email)
-    : undefined;
-  const messageText = recentNotification
-    ? `VAANKAN alert ${recentNotification.reportId}: verified weather event within ${recentNotification.distanceKm} km of your current location.`
-    : "VAANKAN verified weather alerts";
-  const channel = (key: keyof typeof sent, label: string) => {
-    setSent((current) => ({ ...current, [key]: true }));
-    onAction(`${label} alert delivery enabled.`);
-  };
   return (
     <section className="alert-delivery-module">
       <div>
@@ -1891,26 +2355,17 @@ function AlertDeliveryModule({
         <p>Portal alerts stay active while GPS tracking is enabled.</p>
       </div>
       <div className="delivery-channels">
-        <div><Bell size={17} /><span><strong>Portal</strong><small>{sent.portal ? "Active now" : "Paused"}</small></span><Check size={15} /></div>
-        <div><MessageSquare size={17} /><span><strong>SMS</strong><small>{profile?.phone || "Add phone in profile"}</small></span>{profile?.phone ? <a className="delivery-action" href={`sms:${profile.phone}?body=${encodeURIComponent(messageText)}`}>Open</a> : <button onClick={() => channel("sms", "SMS")}>Add</button>}</div>
+        <div><Bell size={17} /><span><strong>Portal</strong><small>Active while signed in</small></span><Check size={15} /></div>
+        <div><MessageSquare size={17} /><span><strong>SMS</strong><small>{profile?.phone || "Add phone in profile"}</small></span><small>Requires SMS provider</small></div>
         <div>
           <Mail size={17} />
           <span>
             <strong>Email</strong>
             <small>{profile?.email || "Add email in profile"}</small>
           </span>
-          {profile?.email ? (
-            <span className="delivery-action">Automated (10 km)</span>
-          ) : (
-            <button onClick={() => channel("email", "Email")}>Add</button>
-          )}
+          <span className="delivery-action">After admin verification</span>
         </div>
       </div>
-      {recentNotification && (
-        <div className="delivery-confirmation">
-          <Check size={15} /> Alert {recentNotification.reportId} queued {recentNotification.distanceKm} km from you via portal, email, and SMS.
-        </div>
-      )}
     </section>
   );
 }
@@ -1991,7 +2446,7 @@ function FilterControls({
         className="filter-reset"
         onClick={() =>
           setFilters({
-            period: "Last 24 hours",
+            period: "Last 7 days",
             event: "All events",
             region: "All India",
             status: "All statuses",
@@ -2092,12 +2547,14 @@ function DashboardEnhanced({
   visibleReports,
   onAction,
   onOpenAlert,
+  onSeedSamples,
 }: {
   filters: Filters;
   setFilters: (value: Filters) => void;
   visibleReports: Report[];
   onAction: (message: string) => void;
   onOpenAlert: (report: Report) => void;
+  onSeedSamples: () => void;
 }) {
   const average = visibleReports.length
     ? (() => {
@@ -2115,14 +2572,17 @@ function DashboardEnhanced({
             A live view of verified weather events across the network.
           </p>
         </div>
-        <button
-          className="outline-button"
-          onClick={() =>
-            onAction("Report intake is available from the Citizen Portal.")
-          }
-        >
-          <MapPin size={16} /> Submit observation
-        </button>
+        <div className="admin-page-actions">
+          <button className="outline-button" onClick={onSeedSamples}>
+            <Database size={16} /> Create 12 sample events
+          </button>
+          <button
+            className="outline-button"
+            onClick={() => onAction("Report intake is available from the Citizen Portal.")}
+          >
+            <MapPin size={16} /> Submit observation
+          </button>
+        </div>
       </div>
       <FilterControls filters={filters} setFilters={setFilters} />
       <section className="stat-grid">
@@ -2205,18 +2665,15 @@ function DashboardEnhanced({
           <div className="signal-divider" />
           <div className="mini-stat">
             <span>
-              <Database size={16} /> Sources connected
+              <Database size={16} /> Source health
             </span>
-            <strong>14 / 16</strong>
-          </div>
-          <div className="progress">
-            <i style={{ width: "87.5%" }} />
+            <strong>N/A</strong>
           </div>
           <div className="mini-stat">
             <span>
-              <Gauge size={16} /> Processing health
+              <Gauge size={16} /> Ingestion health
             </span>
-            <strong>Good</strong>
+            <strong>Not connected</strong>
           </div>
         </div>
       </section>
@@ -2288,12 +2745,14 @@ function ReviewQueueEnhanced({
   visibleReports,
   onAction,
   onOpenAlert,
+  onSeedSamples,
 }: {
   filters: Filters;
   setFilters: (value: Filters) => void;
   visibleReports: Report[];
   onAction: (message: string) => void;
   onOpenAlert: (report: Report) => void;
+  onSeedSamples: () => void;
 }) {
   const [query, setQuery] = useState("");
   const searchedReports = visibleReports.filter((report) =>
@@ -2314,6 +2773,7 @@ function ReviewQueueEnhanced({
         <div className="queue-summary">
           <strong>{searchedReports.length}</strong>
           <span>events in view</span>
+          <button className="outline-button" onClick={onSeedSamples}><Database size={15} /> Seed samples</button>
         </div>
       </div>
       <FilterControls filters={filters} setFilters={setFilters} />
@@ -2471,7 +2931,7 @@ function Dashboard({
         <button
           className="filter-reset"
           onClick={() => {
-            setPeriod("Last 24 hours");
+            setPeriod("Last 7 days");
             setEventFilter("All events");
           }}
         >
@@ -2588,18 +3048,15 @@ function Dashboard({
           <div className="signal-divider" />
           <div className="mini-stat">
             <span>
-              <Database size={16} /> Sources connected
+              <Database size={16} /> Source health
             </span>
-            <strong>14 / 16</strong>
-          </div>
-          <div className="progress">
-            <i style={{ width: "87.5%" }} />
+            <strong>N/A</strong>
           </div>
           <div className="mini-stat">
             <span>
-              <Gauge size={16} /> Processing health
+              <Gauge size={16} /> Ingestion health
             </span>
-            <strong>Good</strong>
+            <strong>Not connected</strong>
           </div>
         </div>
       </section>
@@ -2710,7 +3167,7 @@ function ReviewQueue({ onAction }: { onAction: (message: string) => void }) {
           <span>Received</span>
           <span>Action</span>
         </div>
-        {reports.map((report, index) => (
+        {([] as Report[]).map((report, index) => (
           <div className="table-row" key={report.id}>
             <div className="event-cell">
               <span className={`event-icon ${report.tone}`}>
@@ -2867,15 +3324,18 @@ function AlertDetail({
   onBack,
   onAction,
   onVerify,
+  onSubmit,
 }: {
   report: Report;
   onBack: () => void;
   onAction: (message: string) => void;
   onVerify: (report: Report) => void;
+  onSubmit: (report: Report) => void | Promise<void>;
 }) {
   const [selectedStatus, setSelectedStatus] = useState<Status>(report.status);
   const [reason, setReason] = useState("Ground weather observation and radar consensus verified.");
   const [submitting, setSubmitting] = useState(false);
+  const [sendingSubmission, setSendingSubmission] = useState(false);
   const [lastSubmission, setLastSubmission] = useState<{
     submission_id: string;
     notified_count: number;
@@ -2906,9 +3366,8 @@ function AlertDetail({
         const data = response.data;
         setLastSubmission(data);
         onVerify({ ...report, status: selectedStatus });
-
         if (selectedStatus === "Verified") {
-          onAction(`Decision ${data.submission_id} recorded. Email provider status: ${data.email_status}.`);
+          onAction(`Decision ${data.submission_id} recorded as VERIFIED. Submit the event separately to create citizen alerts.`);
         } else {
           onAction(`Committed #${data.submission_id} to DB with status ${selectedStatus}.`);
         }
@@ -2952,7 +3411,7 @@ function AlertDetail({
         <aside className="verification-panel panel">
           <span className="section-kicker">HUMAN VERIFICATION & SUBMIT</span>
           <h2>Review & Submit Verification</h2>
-          <p>Confirm the status, write operator notes, and click Submit. When confirmed as <strong>VERIFIED</strong>, the system will automatically email all citizens within a 10 km radius.</p>
+          <p>Verify the event first. Only a verified event that you explicitly submit is stored with submitted=true and triggers portal alerts and email within 10 km.</p>
           <form className="submit-verification-form" onSubmit={handleSubmitVerification}>
             <label>
               Select Status
@@ -2962,28 +3421,21 @@ function AlertDetail({
                   className={`verified ${selectedStatus === "Verified" ? "selected" : ""}`}
                   onClick={() => setSelectedStatus("Verified")}
                 >
-                  <Check size={13} /> Verified
-                </button>
-                <button
-                  type="button"
-                  className={`review ${selectedStatus === "Review" ? "selected" : ""}`}
-                  onClick={() => setSelectedStatus("Review")}
-                >
-                  <AlertTriangle size={13} /> Review
+                  <Check size={13} /> Verify Report
                 </button>
                 <button
                   type="button"
                   className={`suspicious ${selectedStatus === "Suspicious" ? "selected" : ""}`}
                   onClick={() => setSelectedStatus("Suspicious")}
                 >
-                  <AlertTriangle size={13} /> Suspicious
+                  <AlertTriangle size={13} /> Mark Suspicious
                 </button>
                 <button
                   type="button"
                   className={`review ${selectedStatus === "Unsupported" ? "selected" : ""}`}
                   onClick={() => setSelectedStatus("Unsupported")}
                 >
-                  Unsupported
+                  Mark Unsupported
                 </button>
               </div>
             </label>
@@ -2999,16 +3451,33 @@ function AlertDetail({
             </label>
             <button className="submit-final-button" type="submit" disabled={submitting}>
               <ShieldCheck size={16} />
-              {submitting ? "Submitting to DB..." : "Submit Verification & Auto-Dispatch Email"}
+              {submitting ? "Saving decision..." : selectedStatus === "Verified" ? "Verify event" : "Save review decision"}
             </button>
           </form>
+
+          {selectedStatus === "Verified" && !report.submitted && (
+            <button
+              className="submit-final-button submit-event-button"
+              type="button"
+              disabled={sendingSubmission}
+              onClick={async () => {
+                setSendingSubmission(true);
+                try { await onSubmit({ ...report, status: "Verified" }); }
+                finally { setSendingSubmission(false); }
+              }}
+            >
+              <Bell size={16} /> {sendingSubmission ? "Submitting event..." : "Submit verified event and alert nearby citizens"}
+            </button>
+          )}
 
           {lastSubmission && (
             <div style={{ marginTop: "14px", padding: "10px 12px", background: "#f0fdf4", border: "1px solid #bbf7d0", color: "#166534", fontSize: "11px", borderRadius: "4px" }}>
               <strong style={{ display: "block", marginBottom: "4px" }}>✓ Committed to DB ({lastSubmission.submission_id})</strong>
-              Auto-dispatched email to {lastSubmission.notified_count} citizen(s) within 10 km radius (Status: {lastSubmission.email_status.toUpperCase()}).
+              Verification decision saved. Email dispatch waits until you explicitly submit the verified event.
             </div>
           )}
+
+          {report.submitted && <div className="submitted-status-note"><Check size={15} /> VERIFIED · submitted to database · citizen alerts dispatched</div>}
 
           <div className="verification-current"><small>STATUS AFTER SUBMISSION</small><StatusPill status={selectedStatus} /></div>
         </aside>

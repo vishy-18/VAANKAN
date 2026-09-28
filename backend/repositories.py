@@ -14,6 +14,8 @@ from .models import User as UserModel
 from .models import VerificationEvidence, VerificationResult
 from .models import Report as ReportModel
 from .models import WeatherEvent as WeatherEventModel
+from .models import WeatherObservation as WeatherObservationModel
+from .models import WeatherSource as WeatherSourceModel
 from .models import WeatherStation as WeatherStationModel
 from .schemas import CommonReport
 
@@ -43,14 +45,18 @@ class ReportRepository:
             state=report.state,
             event_type_claimed=report.event_type_claimed.value,
             verification_status=report.verification_status.value,
-            provenance={"source_name": report.source_name},
+            submitted=report.submitted,
+            submitted_at=report.submitted_at,
+            provenance={"source_name": report.source_name, "citizen_id": report.citizen_id},
         )
         self.session.add(record)
         self.session.flush()
         return record
 
-    def get_by_record_id(self, record_id: str) -> ReportModel | None:
+    def get_by_record_id(self, record_id: str, *, for_update: bool = False) -> ReportModel | None:
         statement = select(ReportModel).where(ReportModel.record_id == record_id)
+        if for_update:
+            statement = statement.with_for_update()
         return self.session.scalars(statement).first()
 
     def get_by_id(self, report_uuid: UUID) -> ReportModel | None:
@@ -77,6 +83,19 @@ class ReportRepository:
                 | (ReportModel.city.ilike(region))
             )
         statement = statement.order_by(ReportModel.source_timestamp.desc()).limit(limit).offset(offset)
+        return list(self.session.scalars(statement))
+
+    def list_for_citizen(self, citizen_id: str, *, limit: int = 100, offset: int = 0) -> list[ReportModel]:
+        statement = (
+            select(ReportModel)
+            .where(
+                (ReportModel.provenance["citizen_id"].as_string() == citizen_id)
+                | (ReportModel.source_name == f"Citizen • {citizen_id}")
+            )
+            .order_by(ReportModel.source_timestamp.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         return list(self.session.scalars(statement))
 
     @staticmethod
@@ -174,12 +193,14 @@ class UserRepository:
         )
         user.citizen_profile = CitizenProfile(
             phone=profile.get("phone"),
+            government_id=profile.get("government_id"),
             address=profile.get("address"),
-            latitude=float(profile.get("latitude", 11.75)),
-            longitude=float(profile.get("longitude", 79.76)),
-            location=WKTElement(
-                f"POINT({float(profile.get('longitude', 79.76))} {float(profile.get('latitude', 11.75))})",
-                srid=4326,
+            latitude=float(profile["latitude"]) if profile.get("latitude") is not None else None,
+            longitude=float(profile["longitude"]) if profile.get("longitude") is not None else None,
+            location=(
+                WKTElement(f"POINT({float(profile['longitude'])} {float(profile['latitude'])})", srid=4326)
+                if profile.get("latitude") is not None and profile.get("longitude") is not None
+                else None
             ),
         )
         self.session.add(user)
@@ -189,24 +210,54 @@ class UserRepository:
     def get_by_email(self, email: str) -> UserModel | None:
         return self.session.scalars(select(UserModel).where(UserModel.email == email)).first()
 
+    def update_citizen_profile(self, identifier: str, updates: dict[str, Any]) -> UserModel | None:
+        try:
+            user = self.session.get(UserModel, UUID(identifier))
+        except ValueError:
+            user = self.get_by_email(identifier)
+        if user is None or user.citizen_profile is None:
+            return None
+        profile = user.citizen_profile
+        if "name" in updates:
+            user.display_name = str(updates["name"])
+        for field in ("phone", "address", "government_id"):
+            if field in updates:
+                setattr(profile, field, updates[field])
+        if "latitude" in updates or "longitude" in updates:
+            latitude = updates.get("latitude")
+            longitude = updates.get("longitude")
+            if latitude is None or longitude is None:
+                profile.latitude = None
+                profile.longitude = None
+                profile.location = None
+            else:
+                profile.latitude = float(latitude)
+                profile.longitude = float(longitude)
+                profile.location = WKTElement(f"POINT({profile.longitude} {profile.latitude})", srid=4326)
+                profile.gps_consent = True
+        self.session.flush()
+        return user
+
     def nearby_citizens(self, latitude: float, longitude: float, radius_meters: float) -> list[dict[str, Any]]:
         profile_location = cast(CitizenProfile.location, Geography(srid=4326))
         center = point_geography(latitude, longitude)
         distance = func.ST_Distance(profile_location, center)
         statement = (
-            select(UserModel.email, UserModel.display_name, CitizenProfile.phone, distance.label("distance_m"))
+            select(UserModel.id, UserModel.email, UserModel.display_name, CitizenProfile.phone, distance.label("distance_m"))
             .join(CitizenProfile, CitizenProfile.user_id == UserModel.id)
+            .where(CitizenProfile.gps_consent.is_(True))
             .where(func.ST_DWithin(profile_location, center, radius_meters))
             .order_by(distance)
         )
         return [
             {
+                "user_id": str(user_id),
                 "email": email,
                 "name": name,
                 "phone": phone or "",
                 "distance_km": round(distance_m / 1000, 2),
             }
-            for email, name, phone, distance_m in self.session.execute(statement)
+            for user_id, email, name, phone, distance_m in self.session.execute(statement)
         ]
 
 
@@ -276,6 +327,9 @@ class AuditRepository:
             "operator": operator,
             "notified_users": notified_users,
             "email_status": email_status,
+            "report_title": report.text,
+            "location": f"{report.city}, {report.district}, {report.state}",
+            "event_type": report.event_type_claimed,
         }
         self.session.add(
             AdminAction(
@@ -347,3 +401,123 @@ class GroundObservationRepository:
             GroundObservationModel.state == state,
             func.ST_DWithin(location, point_geography(latitude, longitude), radius_meters),
         )
+
+
+class WeatherObservationRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def upsert_many(self, observations: list[dict[str, Any]]) -> int:
+        source = self.session.scalars(
+            select(WeatherSourceModel).where(WeatherSourceModel.name == "Open-Meteo")
+        ).first()
+        if source is None:
+            source = WeatherSourceModel(
+                name="Open-Meteo",
+                source_type="WEATHER_MODEL",
+                source_url="https://api.open-meteo.com/v1/forecast",
+                status="LIVE",
+                metadata_json={"provider_is_meteorological_model": True},
+            )
+            self.session.add(source)
+            self.session.flush()
+
+        for data in observations:
+            source.status = "DEGRADED" if data.get("data_mode") == "FALLBACK" else "LIVE"
+            source.last_success_at = data.get("timestamp")
+            station_id = str(data["observation_id"]).split(":")[1]
+            station = self.session.scalars(
+                select(WeatherStationModel).where(WeatherStationModel.station_id == f"open-meteo:{station_id}")
+            ).first()
+            if station is None:
+                station = WeatherStationModel(
+                    station_id=f"open-meteo:{station_id}",
+                    name=str(data.get("city") or station_id),
+                    source_id=source.id,
+                    latitude=float(data["latitude"]),
+                    longitude=float(data["longitude"]),
+                    location=WKTElement(f"POINT({data['longitude']} {data['latitude']})", srid=4326),
+                    city=data.get("city"),
+                    district=str(data.get("district") or "Unknown"),
+                    state=str(data.get("state") or "Unknown"),
+                    status="DEMO" if data.get("data_mode") == "FALLBACK" else "LIVE",
+                )
+                self.session.add(station)
+                self.session.flush()
+            else:
+                station.source_id = source.id
+                station.status = "DEMO" if data.get("data_mode") == "FALLBACK" else "LIVE"
+
+            record = self.session.scalars(
+                select(WeatherObservationModel).where(WeatherObservationModel.observation_id == data["observation_id"])
+            ).first()
+            if record is None:
+                record = WeatherObservationModel(
+                    observation_id=data["observation_id"],
+                    station_id=station.id,
+                    source_id=source.id,
+                    source_timestamp=data["timestamp"],
+                    latitude=float(data["latitude"]),
+                    longitude=float(data["longitude"]),
+                    location=WKTElement(f"POINT({data['longitude']} {data['latitude']})", srid=4326),
+                )
+                self.session.add(record)
+            record.station_id = station.id
+            record.source_id = source.id
+            record.source_timestamp = data["timestamp"]
+            record.processed_at = data.get("ingested_at")
+            record.latitude = float(data["latitude"])
+            record.longitude = float(data["longitude"])
+            record.location = WKTElement(f"POINT({data['longitude']} {data['latitude']})", srid=4326)
+            record.temperature_c = data.get("temperature_c")
+            record.feels_like_c = data.get("feels_like_c")
+            record.humidity_percent = data.get("humidity_percent")
+            record.rainfall_mm = data.get("rainfall_mm")
+            record.rainfall_1h_mm = data.get("rainfall_1h_mm")
+            record.rainfall_3h_mm = data.get("rainfall_3h_mm")
+            record.rainfall_24h_mm = data.get("rainfall_24h_mm")
+            record.wind_speed_kmh = data.get("wind_speed_kmh")
+            record.wind_direction_deg = data.get("wind_direction_deg")
+            record.wind_gust_kmh = data.get("wind_gust_kmh")
+            record.pressure_hpa = data.get("pressure_hpa")
+            record.cloud_cover_percent = data.get("cloud_cover_percent")
+            record.visibility_km = data.get("visibility_km")
+            record.dew_point_c = data.get("dew_point_c")
+            record.historical_rainfall_avg = data.get("historical_rainfall_avg_mm")
+            record.historical_temperature_avg = data.get("historical_temperature_avg_c")
+            record.rainfall_anomaly = data.get("rainfall_anomaly_mm")
+            record.temperature_anomaly = data.get("temperature_anomaly_c")
+            record.wind_anomaly = data.get("wind_anomaly_kmh")
+            record.visibility_anomaly = data.get("visibility_anomaly_km")
+            record.weather_anomaly_score = data.get("weather_anomaly_score")
+            record.quality_status = data.get("data_quality_flag", "UNKNOWN")
+            record.provenance = {
+                "source_id": "open-meteo",
+                "source_type": "WEATHER_MODEL",
+                "data_mode": data.get("data_mode", "UNKNOWN"),
+                "source_units": data.get("source_units", {}),
+                "weather_condition": data.get("weather_condition"),
+                "precipitation_mm": data.get("precipitation_mm"),
+                "historical_rainfall_daily_avg_mm": data.get("historical_rainfall_daily_avg_mm"),
+                "historical_wind_speed_avg_kmh": data.get("historical_wind_speed_avg_kmh"),
+                "historical_visibility_avg_km": data.get("historical_visibility_avg_km"),
+                "rainfall_anomaly_ratio": data.get("rainfall_anomaly_ratio"),
+                "anomaly_components": data.get("anomaly_components", {}),
+                "freshness_status": data.get("freshness_status", "UNKNOWN"),
+                "baseline_start_date": data.get("baseline_start_date").isoformat() if data.get("baseline_start_date") else None,
+                "baseline_end_date": data.get("baseline_end_date").isoformat() if data.get("baseline_end_date") else None,
+                "baseline_observation_days": data.get("baseline_observation_days", 0),
+                "baseline_source": data.get("baseline_source"),
+            }
+        self.session.flush()
+        return len(observations)
+
+    def list(self, *, state: str | None = None, city: str | None = None, limit: int = 500) -> list[tuple[WeatherObservationModel, WeatherStationModel | None]]:
+        statement = select(WeatherObservationModel, WeatherStationModel).outerjoin(
+            WeatherStationModel, WeatherStationModel.id == WeatherObservationModel.station_id
+        ).order_by(WeatherObservationModel.source_timestamp.desc())
+        if state:
+            statement = statement.where(WeatherStationModel.state == state)
+        if city:
+            statement = statement.where(WeatherStationModel.city == city)
+        return list(self.session.execute(statement.limit(limit)))

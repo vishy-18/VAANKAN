@@ -12,7 +12,8 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS postgis")
-    initial_tables = [table for table in Base.metadata.sorted_tables if table.name != "ground_observations"]
+    later_tables = {"ground_observations", "citizen_activities"}
+    initial_tables = [table for table in Base.metadata.sorted_tables if table.name not in later_tables]
     Base.metadata.create_all(bind=op.get_bind(), tables=initial_tables)
 
 
